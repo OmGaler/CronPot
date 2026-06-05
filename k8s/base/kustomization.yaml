@@ -1,0 +1,17 @@
+namespace: cronpot
+
+labels:
+  - pairs:
+      app.kubernetes.io/name: cronpot
+      app.kubernetes.io/part-of: cronpot
+    includeSelectors: true
+
+resources:
+  - namespace.yaml
+  - service-account.yaml
+  - configmap.yaml
+  - pvc.yaml
+  - deployment.yaml
+  - service.yaml
+  - analytics-cronjob.yaml
+  - network-policy.yaml

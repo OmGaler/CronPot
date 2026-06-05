@@ -1,0 +1,43 @@
+name: Move root Markdown files to docs/
+
+on:
+  push:
+
+permissions:
+  contents: write
+
+jobs:
+  move-markdown:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Move root .md files into docs/
+        run: |
+          shopt -s nullglob
+
+          moved=false
+
+          for file in *.md; do
+            [ -e "$file" ] || continue
+
+            
+            # Skip README 
+            # [ "$file" = "README.md" ] && continue
+            
+            git mv "$file" docs/ 2>/dev/null || mv "$file" docs/
+            moved=true
+          done
+
+          if [ "$moved" = true ]; then
+            git config user.name "github-actions"
+            git config user.email "github-actions@github.com"
+
+            git add docs/
+            git commit -m "admin: file root markdown files into docs/"
+            git push
+          else
+            echo "No root markdown files to move."
+          fi

@@ -1,0 +1,163 @@
+name: CI/CD
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      target_environment:
+        description: "Environment to deploy"
+        required: true
+        default: staging
+        type: choice
+        options:
+          - dev
+          - staging
+          - production
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: azure/setup-kubectl@v4
+      - name: Compile Python
+        run: python -m compileall cronpot tests
+      - name: Run unit tests
+        run: python -m unittest discover -s tests
+      - name: Render Kubernetes manifests
+        run: |
+          for overlay in local dev staging production; do
+            kubectl kustomize --load-restrictor=LoadRestrictionsNone "k8s/overlays/$overlay" > "/tmp/cronpot-$overlay.yaml"
+          done
+
+  image:
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name != 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set image name
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Build image
+        run: docker build -t "$IMAGE:${{ github.sha }}" -t "$IMAGE:latest" .
+      - name: Push image
+        run: |
+          docker push "$IMAGE:${{ github.sha }}"
+          docker push "$IMAGE:latest"
+
+  deploy-dev:
+    runs-on: ubuntu-latest
+    needs: image
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.target_environment == 'dev')
+    environment: dev
+    env:
+      KUBE_CONFIG: ${{ secrets.KUBE_CONFIG_DEV }}
+      NAMESPACE: cronpot-dev
+      OVERLAY: dev
+    steps:
+      - name: Skip deploy when kubeconfig is absent
+        if: env.KUBE_CONFIG == ''
+        run: echo "KUBE_CONFIG_DEV is not configured; dev deploy skipped."
+      - uses: actions/checkout@v4
+        if: env.KUBE_CONFIG != ''
+      - uses: azure/setup-kubectl@v4
+        if: env.KUBE_CONFIG != ''
+      - name: Configure kubeconfig
+        if: env.KUBE_CONFIG != ''
+        run: |
+          mkdir -p "$HOME/.kube"
+          printf '%s' "$KUBE_CONFIG" > "$HOME/.kube/config"
+      - name: Set image name
+        if: env.KUBE_CONFIG != ''
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+      - name: Apply manifests
+        if: env.KUBE_CONFIG != ''
+        run: kubectl kustomize --load-restrictor=LoadRestrictionsNone "k8s/overlays/$OVERLAY" | kubectl apply -f -
+      - name: Roll image
+        if: env.KUBE_CONFIG != ''
+        run: |
+          kubectl -n "$NAMESPACE" set image deployment/cronpot-api api="$IMAGE:${{ github.sha }}"
+          kubectl -n "$NAMESPACE" set image cronjob/cronpot-analytics analytics="$IMAGE:${{ github.sha }}"
+          kubectl -n "$NAMESPACE" rollout status deployment/cronpot-api --timeout=180s
+
+  deploy-staging:
+    runs-on: ubuntu-latest
+    needs: image
+    if: github.event_name == 'workflow_dispatch' && inputs.target_environment == 'staging'
+    environment: staging
+    env:
+      KUBE_CONFIG: ${{ secrets.KUBE_CONFIG_STAGING }}
+      NAMESPACE: cronpot-staging
+      OVERLAY: staging
+    steps:
+      - name: Skip deploy when kubeconfig is absent
+        if: env.KUBE_CONFIG == ''
+        run: echo "KUBE_CONFIG_STAGING is not configured; staging deploy skipped."
+      - uses: actions/checkout@v4
+        if: env.KUBE_CONFIG != ''
+      - uses: azure/setup-kubectl@v4
+        if: env.KUBE_CONFIG != ''
+      - name: Configure kubeconfig
+        if: env.KUBE_CONFIG != ''
+        run: |
+          mkdir -p "$HOME/.kube"
+          printf '%s' "$KUBE_CONFIG" > "$HOME/.kube/config"
+      - name: Set image name
+        if: env.KUBE_CONFIG != ''
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+      - name: Apply manifests
+        if: env.KUBE_CONFIG != ''
+        run: kubectl kustomize --load-restrictor=LoadRestrictionsNone "k8s/overlays/$OVERLAY" | kubectl apply -f -
+      - name: Roll image
+        if: env.KUBE_CONFIG != ''
+        run: |
+          kubectl -n "$NAMESPACE" set image deployment/cronpot-api api="$IMAGE:${{ github.sha }}"
+          kubectl -n "$NAMESPACE" set image cronjob/cronpot-analytics analytics="$IMAGE:${{ github.sha }}"
+          kubectl -n "$NAMESPACE" rollout status deployment/cronpot-api --timeout=180s
+
+  deploy-production:
+    runs-on: ubuntu-latest
+    needs: image
+    if: github.event_name == 'workflow_dispatch' && inputs.target_environment == 'production'
+    environment: production
+    env:
+      KUBE_CONFIG: ${{ secrets.KUBE_CONFIG_PRODUCTION }}
+      NAMESPACE: cronpot
+      OVERLAY: production
+    steps:
+      - name: Skip deploy when kubeconfig is absent
+        if: env.KUBE_CONFIG == ''
+        run: echo "KUBE_CONFIG_PRODUCTION is not configured; production deploy skipped."
+      - uses: actions/checkout@v4
+        if: env.KUBE_CONFIG != ''
+      - uses: azure/setup-kubectl@v4
+        if: env.KUBE_CONFIG != ''
+      - name: Configure kubeconfig
+        if: env.KUBE_CONFIG != ''
+        run: |
+          mkdir -p "$HOME/.kube"
+          printf '%s' "$KUBE_CONFIG" > "$HOME/.kube/config"
+      - name: Set image name
+        if: env.KUBE_CONFIG != ''
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+      - name: Apply manifests
+        if: env.KUBE_CONFIG != ''
+        run: kubectl kustomize --load-restrictor=LoadRestrictionsNone "k8s/overlays/$OVERLAY" | kubectl apply -f -
+      - name: Roll image
+        if: env.KUBE_CONFIG != ''
+        run: |
+          kubectl -n "$NAMESPACE" set image deployment/cronpot-api api="$IMAGE:${{ github.sha }}"
+          kubectl -n "$NAMESPACE" set image cronjob/cronpot-analytics analytics="$IMAGE:${{ github.sha }}"
+          kubectl -n "$NAMESPACE" rollout status deployment/cronpot-api --timeout=180s

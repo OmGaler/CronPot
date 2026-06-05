@@ -1,0 +1,28 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: cronpot-analytics
+spec:
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: analytics
+              imagePullPolicy: IfNotPresent
+              workingDir: /app
+              env:
+                - name: PYTHONPATH
+                  value: /app
+                - name: PYTHONDONTWRITEBYTECODE
+                  value: "1"
+                - name: PYTHONUNBUFFERED
+                  value: "1"
+              volumeMounts:
+                - name: source
+                  mountPath: /app/cronpot
+                  readOnly: true
+          volumes:
+            - name: source
+              configMap:
+                name: cronpot-source

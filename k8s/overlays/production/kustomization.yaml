@@ -1,0 +1,12 @@
+namespace: cronpot
+
+resources:
+  - ../../base
+
+images:
+  - name: cronpot
+    newName: ghcr.io/example/cronpot
+    newTag: latest
+
+patches:
+  - path: pvc-patch.yaml

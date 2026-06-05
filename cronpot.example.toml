@@ -1,0 +1,3 @@
+[recipe]
+default_vault = "docs"
+require_dietary_tag = true

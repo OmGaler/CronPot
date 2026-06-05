@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cronpot-config
+data:
+  cronpot.toml: |
+    [recipe]
+    default_vault = "/vault"
+    require_dietary_tag = true

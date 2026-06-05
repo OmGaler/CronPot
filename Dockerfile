@@ -1,0 +1,17 @@
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+COPY pyproject.toml README.md ./
+COPY cronpot ./cronpot
+
+RUN useradd --create-home --uid 10001 appuser
+
+EXPOSE 8080
+
+USER 10001
+
+CMD ["python", "-m", "cronpot", "serve", "--vault", "/vault", "--config", "/config/cronpot.toml"]

@@ -1,0 +1,32 @@
+namespace: cronpot-local
+
+resources:
+  - ../../base
+
+generatorOptions:
+  disableNameSuffixHash: true
+
+configMapGenerator:
+  - name: cronpot-source
+    files:
+      - ../../../cronpot/__init__.py
+      - ../../../cronpot/__main__.py
+      - ../../../cronpot/analytics.py
+      - ../../../cronpot/cli.py
+      - ../../../cronpot/config.py
+      - ../../../cronpot/extraction.py
+      - ../../../cronpot/importing.py
+      - ../../../cronpot/models.py
+      - ../../../cronpot/normalisation.py
+      - ../../../cronpot/server.py
+      - ../../../cronpot/vault.py
+
+images:
+  - name: cronpot
+    newName: python
+    newTag: 3.12-slim
+
+patches:
+  - path: deployment-patch.yaml
+  - path: analytics-cronjob-patch.yaml
+  - path: service-patch.yaml

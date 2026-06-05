@@ -1,0 +1,248 @@
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+from cronpot.analytics import analyse_vault, build_shopping_list, bundle_markdown
+from cronpot.config import load_config
+from cronpot.extraction import extract_recipe, fetch_html
+from cronpot.importing import import_markdown_vault
+from cronpot.models import Recipe
+from cronpot.normalisation import normalise_recipe
+from cronpot.server import run_server
+from cronpot.vault import (
+    commit_paths,
+    find_recipe_file,
+    load_recipes,
+    parse_markdown_recipe,
+    render_markdown,
+    validate_vault,
+    write_recipe_to_vault,
+)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Automate an Obsidian recipe vault.")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    config_parent = argparse.ArgumentParser(add_help=False)
+    config_parent.add_argument("--config", default=None, help="Path to an optional CronPot TOML config file.")
+
+    ingest = subparsers.add_parser("ingest", parents=[config_parent], help="Extract a recipe URL into vault Markdown.")
+    ingest.add_argument("url")
+    ingest.add_argument("--vault", default=None, help="Path to the Obsidian/MkDocs recipe vault.")
+    ingest.add_argument("--html-file", help="Use a saved HTML file instead of fetching the URL.")
+    ingest.add_argument("--allow-incomplete", action="store_true", help="Write Markdown even if extraction is partial.")
+    ingest.add_argument("--dry-run", action="store_true", help="Print generated Markdown instead of writing it.")
+    ingest.add_argument("--no-overwrite", action="store_true", help="Fail if the source already exists in the vault.")
+    ingest.add_argument("--commit", action="store_true", help="Commit the generated recipe when the workspace is a Git repo.")
+    ingest.set_defaults(func=cmd_ingest)
+
+    import_vault = subparsers.add_parser("import-vault", parents=[config_parent], help="Batch import Markdown recipes from an Obsidian vault or cloned repo.")
+    import_vault.add_argument("source", help="Source Markdown file, Obsidian vault, or local cloned repository.")
+    import_vault.add_argument("--vault", default=None, help="Target recipe vault.")
+    import_vault.add_argument("--no-recursive", action="store_true", help="Only import top-level Markdown files.")
+    import_vault.add_argument("--allow-incomplete", action="store_true", help="Import Markdown files that do not have both ingredients and method steps.")
+    import_vault.add_argument("--dry-run", action="store_true", help="Report what would be imported without writing files.")
+    import_vault.add_argument("--no-overwrite", action="store_true", help="Skip sources that already exist in the target vault.")
+    import_vault.add_argument("--commit", action="store_true", help="Commit imported recipes when the workspace is a Git repo.")
+    import_vault.set_defaults(func=cmd_import_vault)
+
+    validate = subparsers.add_parser("validate", parents=[config_parent], help="Check recipe files for schema gaps.")
+    validate.add_argument("--vault", default=None)
+    validate.set_defaults(func=cmd_validate)
+
+    analytics = subparsers.add_parser("analytics", parents=[config_parent], help="Summarise cookbook tags, categories, and ingredients.")
+    analytics.add_argument("--vault", default=None)
+    analytics.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
+    analytics.add_argument("--top", type=int, default=10, help="Number of top values to show.")
+    analytics.set_defaults(func=cmd_analytics)
+
+    shopping = subparsers.add_parser("shopping-list", parents=[config_parent], help="Build a WhatsApp-ready shopping list.")
+    shopping.add_argument("recipes", nargs="*", help="Recipe names, Markdown files, or stems.")
+    shopping.add_argument("--vault", default=None)
+    shopping.add_argument("--all", action="store_true", help="Use every recipe in the vault.")
+    shopping.add_argument("--output", help="Write the list to a file instead of stdout.")
+    shopping.set_defaults(func=cmd_shopping_list)
+
+    bundle = subparsers.add_parser("bundle", parents=[config_parent], help="Export selected recipes as one Markdown bundle.")
+    bundle.add_argument("recipes", nargs="*", help="Recipe names, Markdown files, or stems.")
+    bundle.add_argument("--vault", default=None)
+    bundle.add_argument("--all", action="store_true", help="Use every recipe in the vault.")
+    bundle.add_argument("--output", help="Write the bundle to a file instead of stdout.")
+    bundle.set_defaults(func=cmd_bundle)
+
+    serve = subparsers.add_parser("serve", parents=[config_parent], help="Run the ingestion and analytics HTTP service.")
+    serve.add_argument("--vault", default=None)
+    serve.add_argument("--host", default="0.0.0.0")
+    serve.add_argument("--port", type=int, default=8080)
+    serve.set_defaults(func=cmd_serve)
+
+    return parser
+
+
+def cmd_ingest(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    vault = _vault_path(args, config)
+    html_text = Path(args.html_file).read_text(encoding="utf-8") if args.html_file else fetch_html(args.url)
+    recipe = normalise_recipe(extract_recipe(html_text, args.url), config)
+
+    if not args.allow_incomplete and not recipe.has_core_content():
+        missing = []
+        if not recipe.title:
+            missing.append("title")
+        if not recipe.ingredients:
+            missing.append("ingredients")
+        if not recipe.steps:
+            missing.append("method steps")
+        print(f"Extraction incomplete; missing {', '.join(missing)}. Re-run with --allow-incomplete to write a draft.", file=sys.stderr)
+        return 2
+
+    if args.dry_run:
+        print(render_markdown(recipe), end="")
+        return 0
+
+    target = write_recipe_to_vault(recipe, vault, overwrite=not args.no_overwrite)
+    print(f"Wrote {target}")
+
+    if args.commit:
+        result = commit_paths(Path.cwd(), [target], f"Add recipe: {recipe.title}")
+        if result.committed:
+            print(result.output)
+        else:
+            print(f"Git commit skipped: {result.skipped_reason}")
+    return 0
+
+
+def cmd_import_vault(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    vault = _vault_path(args, config)
+    result = import_markdown_vault(
+        args.source,
+        vault,
+        config=config,
+        recursive=not args.no_recursive,
+        allow_incomplete=args.allow_incomplete,
+        overwrite=not args.no_overwrite,
+        dry_run=args.dry_run,
+    )
+
+    if args.dry_run:
+        print(f"Would import {len(result.previews)} Markdown recipe file(s).")
+    else:
+        print(f"Imported {len(result.imported)} Markdown recipe file(s).")
+    for skip in result.skipped:
+        print(f"Skipped {skip.path}: {skip.reason}")
+
+    if not result.imported and not result.previews and not result.skipped:
+        print("No Markdown files found.")
+        return 1
+
+    if args.commit and result.imported:
+        commit = commit_paths(Path.cwd(), result.imported, "Import recipe vault")
+        if commit.committed:
+            print(commit.output)
+        else:
+            print(f"Git commit skipped: {commit.skipped_reason}")
+    return 0
+
+
+def cmd_validate(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    issues = validate_vault(_vault_path(args, config), config)
+    if not issues:
+        print("No validation issues found.")
+        return 0
+    for issue in issues:
+        print(f"{issue.path}: {issue.message}")
+    return 1
+
+
+def cmd_analytics(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    analytics = analyse_vault(_vault_path(args, config))
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "recipe_count": analytics.recipe_count,
+                    "recipes_missing_source": analytics.recipes_missing_source,
+                    "tags": dict(analytics.tag_counts.most_common(args.top)),
+                    "categories": dict(analytics.category_counts.most_common(args.top)),
+                    "ingredients": dict(analytics.ingredient_counts.most_common(args.top)),
+                },
+                indent=2,
+            )
+        )
+        return 0
+
+    print(f"Recipes: {analytics.recipe_count}")
+    print(f"Missing source: {analytics.recipes_missing_source}")
+    _print_counter("Top tags", analytics.tag_counts, args.top)
+    _print_counter("Top categories", analytics.category_counts, args.top)
+    _print_counter("Top ingredients", analytics.ingredient_counts, args.top)
+    return 0
+
+
+def cmd_shopping_list(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    recipes = _select_recipes(_vault_path(args, config), args.recipes, args.all)
+    items = build_shopping_list([recipe for _path, recipe in recipes])
+    output = "Shopping list\n" + "\n".join(f"- {item}" for item in items) + "\n"
+    _write_or_print(output, args.output)
+    return 0
+
+
+def cmd_bundle(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    recipes = _select_recipes(_vault_path(args, config), args.recipes, args.all)
+    output = bundle_markdown(recipes)
+    _write_or_print(output, args.output)
+    return 0
+
+
+def cmd_serve(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    run_server(args.host, args.port, _vault_path(args, config), config)
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        return args.func(args)
+    except (OSError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+
+def _vault_path(args: argparse.Namespace, config: object) -> str:
+    return args.vault or config.default_vault
+
+
+def _select_recipes(vault_path: str, requested: list[str], use_all: bool) -> list[tuple[Path, Recipe]]:
+    if use_all:
+        return load_recipes(vault_path)
+    if not requested:
+        raise ValueError("Pass recipe names or use --all.")
+    selected = []
+    for item in requested:
+        path = find_recipe_file(vault_path, item)
+        selected.append((path, parse_markdown_recipe(path)))
+    return selected
+
+
+def _print_counter(title: str, counter: object, limit: int) -> None:
+    print(title + ":")
+    for key, count in counter.most_common(limit):
+        print(f"- {key}: {count}")
+
+
+def _write_or_print(output: str, destination: str | None) -> None:
+    if destination:
+        Path(destination).write_text(output, encoding="utf-8", newline="\n")
+        print(f"Wrote {destination}")
+    else:
+        print(output, end="")

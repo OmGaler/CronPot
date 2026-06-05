@@ -1,0 +1,66 @@
+# Runtime configuration and secrets
+.env
+.env.*
+!.env.example
+cronpot.toml
+*.secret.*
+secrets/
+*.pem
+*.key
+*.crt
+*.p12
+*.kubeconfig
+kubeconfig*
+
+# Recipe vault and Obsidian/MkDocs site data
+docs/
+Templates/
+.obsidian/
+.obsidian.mobile/
+mkdocs.yml
+_site/
+
+# Downloaded source bundles and local toolchains
+Python-*/
+Python-*.tgz
+Python-*.tar.gz
+
+# Python artefacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.venv/
+venv/
+env/
+build/
+dist/
+*.egg-info/
+
+# Generated exports and reports
+recipe-bundle.md
+shopping-list.md
+analytics.json
+rendered*.yaml
+*.local.yaml
+
+# Container and Kubernetes local state
+.docker/
+docker-compose.override.yml
+
+# Editor and OS noise
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Dev 
+todo.md

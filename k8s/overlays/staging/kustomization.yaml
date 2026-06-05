@@ -1,0 +1,12 @@
+namespace: cronpot-staging
+
+resources:
+  - ../../base
+
+images:
+  - name: cronpot
+    newName: ghcr.io/example/cronpot
+    newTag: staging
+
+patches:
+  - path: pvc-patch.yaml

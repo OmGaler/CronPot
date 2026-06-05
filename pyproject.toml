@@ -1,0 +1,13 @@
+[project]
+name = "cronpot"
+version = "0.1.0"
+description = "Automation tools for an Obsidian recipe vault."
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+cronpot = "cronpot.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
