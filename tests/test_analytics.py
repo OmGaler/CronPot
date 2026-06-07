@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from cronpot.analytics import analyse_vault, build_shopping_list
+from cronpot.analytics import analyse_vault, build_shopping_list, html_cookbook
 from cronpot.models import Recipe
 from cronpot.vault import write_recipe_to_vault
 
@@ -50,6 +50,32 @@ class AnalyticsTests(unittest.TestCase):
         )
 
         self.assertEqual(items, ["2 apples", "salt", "pepper"])
+
+    def test_builds_escaped_html_cookbook(self) -> None:
+        output = html_cookbook(
+            [
+                (
+                    Path("Fish & Chips.md"),
+                    Recipe(
+                        title="Fish & Chips",
+                        ingredients=["1 <large> fish", "Oil & salt"],
+                        steps=["Fry until crisp."],
+                        tags=["parev"],
+                        categories=["Mains"],
+                        source='https://example.com/recipe?name=fish&note="hot"',
+                    ),
+                )
+            ],
+            title="Friday <Dinner>",
+        )
+
+        self.assertIn("<!doctype html>", output)
+        self.assertIn("<title>Friday &lt;Dinner&gt;</title>", output)
+        self.assertIn("<h2>Fish &amp; Chips</h2>", output)
+        self.assertIn("<li>1 &lt;large&gt; fish</li>", output)
+        self.assertIn("Oil &amp; salt", output)
+        self.assertIn('href="https://example.com/recipe?name=fish&amp;note=&quot;hot&quot;"', output)
+        self.assertNotIn("1 <large> fish", output)
 
 
 if __name__ == "__main__":

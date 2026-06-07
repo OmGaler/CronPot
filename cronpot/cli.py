@@ -5,7 +5,7 @@ import json
 import sys
 from pathlib import Path
 
-from cronpot.analytics import analyse_vault, build_shopping_list, bundle_markdown
+from cronpot.analytics import analyse_vault, build_shopping_list, bundle_markdown, html_cookbook
 from cronpot.config import load_config
 from cronpot.extraction import extract_recipe, fetch_html
 from cronpot.importing import import_markdown_vault
@@ -59,6 +59,20 @@ def build_parser() -> argparse.ArgumentParser:
     analytics.add_argument("--top", type=int, default=10, help="Number of top values to show.")
     analytics.set_defaults(func=cmd_analytics)
 
+    export = subparsers.add_parser("export", parents=[config_parent], help="Export recipes as HTML, Markdown, or a shopping list.")
+    export.add_argument("recipes", nargs="*", help="Recipe names, Markdown files, or stems.")
+    export.add_argument("--vault", default=None)
+    export.add_argument("--all", action="store_true", help="Use every recipe in the vault.")
+    export.add_argument(
+        "--format",
+        choices=["html", "markdown", "shopping-list"],
+        default="html",
+        help="Export format.",
+    )
+    export.add_argument("--title", default="CronPot Cookbook", help="HTML document title.")
+    export.add_argument("--output", help="Write the export to a file instead of stdout.")
+    export.set_defaults(func=cmd_export)
+
     shopping = subparsers.add_parser("shopping-list", parents=[config_parent], help="Build a WhatsApp-ready shopping list.")
     shopping.add_argument("recipes", nargs="*", help="Recipe names, Markdown files, or stems.")
     shopping.add_argument("--vault", default=None)
@@ -73,11 +87,25 @@ def build_parser() -> argparse.ArgumentParser:
     bundle.add_argument("--output", help="Write the bundle to a file instead of stdout.")
     bundle.set_defaults(func=cmd_bundle)
 
+    html = subparsers.add_parser("html", parents=[config_parent], help="Export selected recipes as a standalone HTML cookbook.")
+    html.add_argument("recipes", nargs="*", help="Recipe names, Markdown files, or stems.")
+    html.add_argument("--vault", default=None)
+    html.add_argument("--all", action="store_true", help="Use every recipe in the vault.")
+    html.add_argument("--title", default="CronPot Cookbook", help="Document title.")
+    html.add_argument("--output", help="Write the HTML to a file instead of stdout.")
+    html.set_defaults(func=cmd_html)
+
     serve = subparsers.add_parser("serve", parents=[config_parent], help="Run the ingestion and analytics HTTP service.")
     serve.add_argument("--vault", default=None)
     serve.add_argument("--host", default="0.0.0.0")
     serve.add_argument("--port", type=int, default=8080)
     serve.set_defaults(func=cmd_serve)
+
+    start = subparsers.add_parser("start", parents=[config_parent], help="Start the ingestion and analytics HTTP service.")
+    start.add_argument("--vault", default=None)
+    start.add_argument("--host", default="0.0.0.0")
+    start.add_argument("--port", type=int, default=8080)
+    start.set_defaults(func=cmd_serve)
 
     return parser
 
@@ -194,10 +222,32 @@ def cmd_shopping_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_export(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    recipes = _select_recipes(_vault_path(args, config), args.recipes, args.all)
+    if args.format == "markdown":
+        output = bundle_markdown(recipes)
+    elif args.format == "shopping-list":
+        items = build_shopping_list([recipe for _path, recipe in recipes])
+        output = "Shopping list\n" + "\n".join(f"- {item}" for item in items) + "\n"
+    else:
+        output = html_cookbook(recipes, title=args.title)
+    _write_or_print(output, args.output)
+    return 0
+
+
 def cmd_bundle(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     recipes = _select_recipes(_vault_path(args, config), args.recipes, args.all)
     output = bundle_markdown(recipes)
+    _write_or_print(output, args.output)
+    return 0
+
+
+def cmd_html(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    recipes = _select_recipes(_vault_path(args, config), args.recipes, args.all)
+    output = html_cookbook(recipes, title=args.title)
     _write_or_print(output, args.output)
     return 0
 

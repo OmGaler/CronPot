@@ -12,7 +12,7 @@ The current implementation can:
 - enforce exactly one dietary tag (`parev`, `milky`, or `meaty`) unless disabled in config
 - write idempotent Markdown recipes using a source hash
 - analyse a vault
-- export shopping lists and Markdown bundles
+- export shopping lists, Markdown bundles, and standalone HTML cookbooks
 - run as a containerised HTTP service for Kubernetes deployment
 - test, build, publish, and deploy through GitHub Actions
 
@@ -45,17 +45,25 @@ Use either `servings` or `yield`; generated Markdown writes `servings` when avai
 
 ## Commands
 
-Run commands from the repository root. Replace `docs` with any vault folder path.
+Install the CLI locally when working from a checkout:
 
 ```powershell
-python -m cronpot ingest "https://example.com/recipe" --vault docs
-python -m cronpot ingest "https://example.com/recipe" --html-file saved-page.html --dry-run
-python -m cronpot import-vault "C:\path\to\ObsidianVault" --vault docs
-python -m cronpot analytics --vault docs
-python -m cronpot shopping-list "Aglio e Olio" "Roast Chicken" --vault docs
-python -m cronpot bundle "Aglio e Olio" --vault docs --output recipe-bundle.md
-python -m cronpot validate --vault docs
-python -m cronpot serve --vault docs --host 127.0.0.1 --port 8080
+pip install -e .
+```
+
+Then run `cronpot` commands from anywhere. Replace `docs` with any vault folder path.
+
+```powershell
+cronpot ingest "https://example.com/recipe" --vault docs
+cronpot ingest "https://example.com/recipe" --html-file saved-page.html --dry-run
+cronpot import-vault "C:\path\to\ObsidianVault" --vault docs
+cronpot analytics --vault docs
+cronpot export "Aglio e Olio" --vault docs
+cronpot export --all --vault docs --output cookbook.html
+cronpot export "Aglio e Olio" --vault docs --format markdown --output recipe-bundle.md
+cronpot export "Aglio e Olio" "Roast Chicken" --vault docs --format shopping-list
+cronpot validate --vault docs
+cronpot start --vault docs --host 127.0.0.1 --port 8080
 ```
 
 Use `--commit` with `ingest` or `import-vault` to request a Git commit. If the current folder is not a Git repository, the commit is skipped and the Markdown files are still written.
@@ -65,7 +73,7 @@ Use `--commit` with `ingest` or `import-vault` to request a Git commit. If the c
 Run locally:
 
 ```powershell
-python -m cronpot serve --vault docs --host 127.0.0.1 --port 8080
+cronpot start --vault docs --host 127.0.0.1 --port 8080
 ```
 
 Or use Kubernetes port-forwarding:
