@@ -11,10 +11,10 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from cronpot.analytics import analyse_vault, build_shopping_list, html_cookbook
 from cronpot.config import AutomationConfig
-from cronpot.extraction import extract_recipe, fetch_html
+from cronpot.extraction import fetch_html
+from cronpot.ingest import prepare_ingested_recipe
 from cronpot.llm import LlmError, suggest_ingredient_alias_map
 from cronpot.models import Recipe
-from cronpot.normalisation import normalise_recipe
 from cronpot.vault import load_recipes, write_recipe_to_vault
 
 
@@ -116,11 +116,14 @@ class CronPotHandler(BaseHTTPRequestHandler):
             return
 
         try:
-            recipe = normalise_recipe(extract_recipe(fetch_html(url), url), self.config)
+            recipe = prepare_ingested_recipe(fetch_html(url), url, self.vault_path, self.config)
             if not recipe.has_core_content():
                 self._send_json({"error": "extraction incomplete"}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
                 return
             target = write_recipe_to_vault(recipe, self.vault_path)
+        except LlmError as exc:
+            self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_GATEWAY)
+            return
         except OSError as exc:
             self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_GATEWAY)
             return

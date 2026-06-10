@@ -16,6 +16,7 @@ class AutomationConfig:
     llm_base_url: str = "http://127.0.0.1:11434"
     llm_model: str = "gemma4:latest"
     llm_auto_normalise_ingredients: bool = False
+    llm_rewrite_ingested_recipes: bool = False
     llm_ingredient_limit: int = 120
 
 
@@ -41,5 +42,6 @@ def load_config(path: str | Path | None = None) -> AutomationConfig:
         llm_base_url=str(llm_config.get("base_url") or "http://127.0.0.1:11434").rstrip("/"),
         llm_model=str(llm_config.get("model") or "gemma4:latest"),
         llm_auto_normalise_ingredients=bool(llm_config.get("auto_normalise_ingredients", False)),
+        llm_rewrite_ingested_recipes=bool(llm_config.get("rewrite_ingested_recipes", False)),
         llm_ingredient_limit=int(llm_config.get("ingredient_limit") or 120),
     )

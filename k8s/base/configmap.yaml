@@ -13,4 +13,5 @@ data:
     base_url = "http://ollama.ollama.svc.cluster.local:11434"
     model = "qwen2.5:3b"
     auto_normalise_ingredients = true
+    rewrite_ingested_recipes = false
     ingredient_limit = 120

@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
+from dataclasses import replace
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from cronpot.analytics import _ingredient_keys
 from cronpot.config import AutomationConfig
-from cronpot.vault import load_recipes
+from cronpot.models import Recipe
+from cronpot.vault import load_recipes, render_markdown
 
 
 @dataclass(slots=True)
@@ -31,6 +34,30 @@ def suggest_ingredient_aliases(vault_path: str, config: AutomationConfig, limit:
 def suggest_ingredient_alias_map(vault_path: str, config: AutomationConfig, limit: int = 80) -> dict[str, str]:
     suggestions = suggest_ingredient_aliases(vault_path, config, limit)
     return {suggestion.source: suggestion.canonical for suggestion in suggestions}
+
+
+def rewrite_recipe_to_vault_style(recipe: Recipe, vault_path: str, config: AutomationConfig) -> Recipe:
+    if config.llm_provider != "ollama":
+        raise LlmError(f"Unsupported LLM provider: {config.llm_provider}")
+
+    _ensure_ollama_model_available(config)
+    response = _call_ollama(config, _recipe_rewrite_prompt(recipe, vault_path))
+    rewritten = _parse_recipe_response(response)
+    return replace(
+        recipe,
+        title=rewritten.title or recipe.title,
+        ingredients=rewritten.ingredients or recipe.ingredients,
+        steps=rewritten.steps or recipe.steps,
+        prep_time=rewritten.prep_time or recipe.prep_time,
+        cook_time=rewritten.cook_time or recipe.cook_time,
+        total_time=rewritten.total_time or recipe.total_time,
+        servings=rewritten.servings or recipe.servings,
+        yield_amount=rewritten.yield_amount or recipe.yield_amount,
+        tags=rewritten.tags or recipe.tags,
+        categories=rewritten.categories or recipe.categories,
+        source=recipe.source,
+        source_hash=recipe.source_hash,
+    )
 
 
 def _ingredient_alias_candidates(vault_path: str, config: AutomationConfig, limit: int) -> tuple[dict[str, str], Counter[str]]:
@@ -136,11 +163,43 @@ def _ingredient_alias_prompt(ingredients: list[str]) -> str:
     )
 
 
+def _recipe_rewrite_prompt(recipe: Recipe, vault_path: str, sample_limit: int = 3) -> str:
+    examples = _vault_style_examples(vault_path, sample_limit)
+    examples_text = "\n\n---\n\n".join(examples) if examples else "No existing vault examples are available yet."
+    payload = {
+        "title": recipe.title,
+        "ingredients": recipe.ingredients,
+        "steps": recipe.steps,
+        "prep_time": recipe.prep_time,
+        "cook_time": recipe.cook_time,
+        "total_time": recipe.total_time,
+        "servings": recipe.servings,
+        "yield": recipe.yield_amount,
+        "tags": recipe.tags,
+        "categories": recipe.categories,
+        "source": recipe.source,
+    }
+    return (
+        "You are rewriting an extracted web recipe for a personal Obsidian cookbook.\n"
+        "Preserve the recipe facts: do not add ingredients, remove ingredients, invent timings, or change the source.\n"
+        "Clean messy wording, use British English, keep ingredient lines concise, and write method steps as clear imperative instructions.\n"
+        "Match the style of the existing vault examples where possible.\n"
+        "Return JSON only, in this exact shape: "
+        "{\"recipe\":{\"title\":\"\",\"ingredients\":[\"\"],\"steps\":[\"\"],\"prep_time\":\"\",\"cook_time\":\"\",\"total_time\":\"\",\"servings\":\"\",\"yield\":\"\",\"tags\":[\"\"],\"categories\":[\"\"]}}.\n\n"
+        f"Existing vault examples:\n{examples_text}\n\n"
+        f"Extracted recipe JSON:\n{json.dumps(payload, ensure_ascii=False, indent=2)}\n"
+    )
+
+
+def _vault_style_examples(vault_path: str, limit: int) -> list[str]:
+    examples: list[str] = []
+    for path, recipe in load_recipes(vault_path)[:limit]:
+        examples.append(f"Recipe title: {recipe.title or path.stem}\n{render_markdown(recipe).strip()}")
+    return examples
+
+
 def _parse_alias_response(text: str) -> dict[str, str]:
-    try:
-        parsed: Any = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise LlmError(f"Ollama did not return valid JSON: {exc}") from exc
+    parsed = _parse_json_object(text)
 
     aliases = parsed.get("aliases") if isinstance(parsed, dict) else None
     if not isinstance(aliases, dict):
@@ -154,6 +213,56 @@ def _parse_alias_response(text: str) -> dict[str, str]:
             if source_key and canonical_key and source_key != canonical_key:
                 clean[source_key] = canonical_key
     return clean
+
+
+def _parse_recipe_response(text: str) -> Recipe:
+    parsed = _parse_json_object(text)
+    recipe = parsed.get("recipe")
+    if not isinstance(recipe, dict):
+        raise LlmError('Ollama JSON must contain a "recipe" object.')
+
+    title = _json_string(recipe.get("title"))
+    ingredients = _json_string_list(recipe.get("ingredients"))
+    steps = _json_string_list(recipe.get("steps"))
+    if not title or not ingredients or not steps:
+        raise LlmError("Ollama recipe rewrite must include title, ingredients, and steps.")
+
+    return Recipe(
+        title=title,
+        ingredients=ingredients,
+        steps=steps,
+        prep_time=_json_string(recipe.get("prep_time")),
+        cook_time=_json_string(recipe.get("cook_time")),
+        total_time=_json_string(recipe.get("total_time")),
+        servings=_json_string(recipe.get("servings")),
+        yield_amount=_json_string(recipe.get("yield")),
+        tags=_json_string_list(recipe.get("tags")),
+        categories=_json_string_list(recipe.get("categories")),
+    )
+
+
+def _parse_json_object(text: str) -> dict[str, Any]:
+    clean = text.strip()
+    if clean.startswith("```"):
+        clean = re.sub(r"^```(?:json)?\s*", "", clean, flags=re.IGNORECASE)
+        clean = re.sub(r"\s*```$", "", clean)
+    try:
+        parsed = json.loads(clean)
+    except json.JSONDecodeError as exc:
+        raise LlmError(f"Ollama did not return valid JSON: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise LlmError("Ollama JSON response must be an object.")
+    return parsed
+
+
+def _json_string(value: Any) -> str:
+    return str(value).strip() if isinstance(value, str) else ""
+
+
+def _json_string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item.strip() for item in value if isinstance(item, str) and item.strip()]
 
 
 def _suggestions_from_aliases(aliases: dict[str, str], counts: Counter[str]) -> list[IngredientAliasSuggestion]:

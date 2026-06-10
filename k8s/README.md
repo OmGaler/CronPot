@@ -44,11 +44,46 @@ The base includes:
 | `staging` | `cronpot-staging` | GHCR image | 2Gi |
 | `production` | `cronpot` | GHCR image | 5Gi |
 
+Practical differences:
+
+| Overlay | Use it when | What changes compared with the previous step |
+| --- | --- | --- |
+| `local` | You are editing code on your laptop and want the fastest Kubernetes feedback loop | Runs from mounted source files, uses Docker Desktop-friendly defaults, and is started by `scripts\k8s-start.cmd docs` |
+| `dev` | You want the first shared cluster deployment after code has been built into an image | Uses the packaged GHCR image instead of mounted source, so it tests the container artefact |
+| `staging` | You want a production-like rehearsal before a release | Keeps the same workload shape but uses a separate namespace and a larger vault PVC |
+| `production` | You are deploying the real service | Uses the stable production namespace and the largest PVC in the current manifests |
+
 Each environment currently runs one API replica. The vault is a writable PVC, so multi-replica scaling should wait until we introduce RWX storage or move mutable state into a database/object store. That limitation is useful here: it keeps the stateful part honest instead of pretending a file-backed app can be horizontally scaled without a storage decision.
 
 ## Local Flow
 
 The local overlay runs from `python:3.12-slim` and mounts the local source files through a ConfigMap. This avoids the Docker Desktop multi-node image-loading problem where a locally built image is visible to Docker but not to Kubernetes.
+
+The shortest local loop is:
+
+```cmd
+scripts\k8s-start.cmd docs
+```
+
+It applies the local overlay, waits for the API Deployment, seeds `/vault` from `docs`, prints the dashboard URL, and starts a blocking port-forward to `http://127.0.0.1:8080/dashboard`. Press `Ctrl+C` to stop port-forwarding.
+
+PowerShell equivalent:
+
+```powershell
+.\scripts\k8s-start.ps1 -Source docs
+```
+
+To start without seeding the PVC:
+
+```cmd
+scripts\k8s-start.cmd -
+```
+
+To clear the PVC before seeding:
+
+```cmd
+scripts\k8s-start.cmd docs cronpot-local 8080 /clear
+```
 
 ```powershell
 .\scripts\k8s-render.ps1 -Overlay local
@@ -144,18 +179,19 @@ The dashboard reads the same vault and config as the API endpoints. The analytic
 
 ## LLM Normalisation In Kubernetes
 
-The base `cronpot.toml` includes an Ollama-oriented `[llm]` section, but `auto_normalise_ingredients` is disabled by default:
+The base `cronpot.toml` includes an Ollama-oriented `[llm]` section:
 
 ```toml
 [llm]
 provider = "ollama"
 base_url = "http://ollama.ollama.svc.cluster.local:11434"
 model = "qwen2.5:3b"
-auto_normalise_ingredients = false
+auto_normalise_ingredients = true
+rewrite_ingested_recipes = false
 ingredient_limit = 120
 ```
 
-That default keeps a fresh cluster deterministic. To enable LLM-backed analytics in Kubernetes, run Ollama in-cluster or expose an existing Ollama endpoint, then update the ConfigMap and set `auto_normalise_ingredients = true`.
+To use LLM-backed analytics in Kubernetes, run Ollama in-cluster or expose an existing Ollama endpoint, then keep `auto_normalise_ingredients = true`. To let Kubernetes ingests rewrite extracted recipes into the vault style, also set `rewrite_ingested_recipes = true`.
 
 This is a good next teaching slice because it introduces:
 
@@ -173,6 +209,15 @@ If port-forwarding says the pod is not running, check:
 kubectl -n cronpot-local get pods
 kubectl -n cronpot-local get events --sort-by=.lastTimestamp
 ```
+
+If `kubectl` reports that it cannot download OpenAPI from `127.0.0.1` or that the target machine refused the connection, the Kubernetes API is not reachable. Start Docker Desktop, ensure Kubernetes is enabled, then check:
+
+```cmd
+kubectl cluster-info
+kubectl config current-context
+```
+
+The unified start helpers run this check before applying manifests so the failure points at cluster availability rather than YAML validation.
 
 `ErrImageNeverPull` means Kubernetes could not see a local image. Re-apply the current local overlay:
 

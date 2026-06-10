@@ -8,11 +8,11 @@ from pathlib import Path
 
 from cronpot.analytics import analyse_vault, build_shopping_list, bundle_markdown, html_cookbook, pdf_cookbook
 from cronpot.config import load_config
-from cronpot.extraction import extract_recipe, fetch_html
+from cronpot.extraction import fetch_html
+from cronpot.ingest import prepare_ingested_recipe
 from cronpot.importing import import_markdown_vault
 from cronpot.llm import LlmError, suggest_ingredient_alias_map, suggest_ingredient_aliases
 from cronpot.models import Recipe
-from cronpot.normalisation import normalise_recipe
 from cronpot.server import run_server
 from cronpot.vault import (
     commit_paths,
@@ -39,6 +39,7 @@ def build_parser() -> argparse.ArgumentParser:
     ingest.add_argument("--dry-run", action="store_true", help="Print generated Markdown instead of writing it.")
     ingest.add_argument("--no-overwrite", action="store_true", help="Fail if the source already exists in the vault.")
     ingest.add_argument("--commit", action="store_true", help="Commit the generated recipe when the workspace is a Git repo.")
+    ingest.add_argument("--title", help="Use this recipe title instead of prompting for the extracted suggestion.")
     ingest.set_defaults(func=cmd_ingest)
 
     import_vault = subparsers.add_parser("import-vault", parents=[config_parent], help="Batch import Markdown recipes from an Obsidian vault or cloned repo.")
@@ -126,7 +127,8 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     vault = _vault_path(args, config)
     html_text = Path(args.html_file).read_text(encoding="utf-8") if args.html_file else fetch_html(args.url)
-    recipe = normalise_recipe(extract_recipe(html_text, args.url), config)
+    recipe = prepare_ingested_recipe(html_text, args.url, vault, config)
+    recipe.title = _ingest_title(recipe.title, args.title, prompt=not args.dry_run)
 
     if not args.allow_incomplete and not recipe.has_core_content():
         missing = []
@@ -348,6 +350,17 @@ def _write_or_print(output: str, destination: str | None) -> None:
 def _write_bytes(output: bytes, destination: str) -> None:
     Path(destination).write_bytes(output)
     print(f"Wrote {destination}")
+
+
+def _ingest_title(suggestion: str, override: str | None, prompt: bool = True) -> str:
+    suggested = suggestion.strip() or "Untitled Recipe"
+    if override is not None:
+        return override.strip() or suggested
+    if not prompt or not sys.stdin.isatty():
+        return suggested
+
+    response = input(f"Recipe name [{suggested}]: ").strip()
+    return response or suggested
 
 
 def _default_export_path(recipes: list[tuple[Path, Recipe]], extension: str) -> str:

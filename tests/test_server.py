@@ -134,6 +134,32 @@ class ServerTests(unittest.TestCase):
 
         self.assertEqual(error.exception.code, 400)
 
+    def test_post_ingest_rewrites_recipe_when_configured(self) -> None:
+        html = """
+        <script type="application/ld+json">
+        {"@type":"Recipe","name":"messy soup","recipeIngredient":["one carrot"],"recipeInstructions":["you should chop it"]}
+        </script>
+        """
+        CronPotHandler.config = AutomationConfig(llm_rewrite_ingested_recipes=True)
+        rewritten = Recipe(
+            title="Carrot Soup",
+            ingredients=["1 carrot"],
+            steps=["Chop the carrot."],
+            tags=["starter", "parev"],
+            categories=["Soups"],
+            source="https://example.com/soup",
+        )
+
+        with patch("cronpot.server.fetch_html", return_value=html), patch(
+            "cronpot.ingest.rewrite_recipe_to_vault_style",
+            return_value=rewritten,
+        ) as rewrite:
+            payload = self.post_json("/ingest", {"url": "https://example.com/soup"})
+
+        self.assertEqual(payload["title"], "Carrot Soup")
+        self.assertTrue((self.vault / "Carrot Soup.md").exists())
+        rewrite.assert_called_once()
+
     def get_json(self, path: str) -> dict[str, object]:
         with urlopen(f"{self.base_url}{path}", timeout=5) as response:
             return json.loads(response.read().decode("utf-8"))
@@ -148,6 +174,16 @@ class ServerTests(unittest.TestCase):
         with urlopen(request, timeout=5) as response:
             self.assertEqual(response.headers["Content-Type"], "text/html; charset=utf-8")
             return response.read().decode("utf-8")
+
+    def post_json(self, path: str, payload: dict[str, object]) -> dict[str, object]:
+        request = Request(
+            f"{self.base_url}{path}",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(request, timeout=5) as response:
+            return json.loads(response.read().decode("utf-8"))
 
 
 if __name__ == "__main__":

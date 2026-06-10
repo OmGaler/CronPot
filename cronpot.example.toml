@@ -7,4 +7,5 @@ provider = "ollama"
 base_url = "http://127.0.0.1:11434"
 model = "gemma4:latest"
 auto_normalise_ingredients = false
+rewrite_ingested_recipes = false
 ingredient_limit = 120

@@ -8,7 +8,8 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
-from cronpot.cli import main
+from cronpot.cli import _ingest_title, main
+from cronpot.config import AutomationConfig
 from cronpot.llm import IngredientAliasSuggestion
 from cronpot.models import Recipe
 from cronpot.vault import write_recipe_to_vault
@@ -187,6 +188,68 @@ class CliTests(unittest.TestCase):
 
             self.assertEqual(exit_code, 0)
             self.assertIn("- sugar: 2", stdout.getvalue())
+
+    def test_ingest_rewrites_recipe_when_configured(self) -> None:
+        html = """
+        <script type="application/ld+json">
+        {"@type":"Recipe","name":"messy soup","recipeIngredient":["one carrot"],"recipeInstructions":["you should chop it"]}
+        </script>
+        """
+        rewritten = Recipe(
+            title="Carrot Soup",
+            ingredients=["1 carrot"],
+            steps=["Chop the carrot."],
+            tags=["starter", "parev"],
+            categories=["Soups"],
+            source="https://example.com/soup",
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            vault = Path(temp_dir)
+            stdout = StringIO()
+            with patch("cronpot.cli.load_config", return_value=AutomationConfig(llm_rewrite_ingested_recipes=True)), patch(
+                "cronpot.cli.fetch_html",
+                return_value=html,
+            ), patch("cronpot.ingest.rewrite_recipe_to_vault_style", return_value=rewritten) as rewrite, redirect_stdout(stdout):
+                exit_code = main(["ingest", "https://example.com/soup", "--vault", str(vault), "--dry-run"])
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("#", stdout.getvalue())
+            self.assertIn("- 1 carrot", stdout.getvalue())
+            self.assertIn("1. Chop the carrot.", stdout.getvalue())
+            rewrite.assert_called_once()
+
+    def test_ingest_title_accepts_extracted_suggestion_when_prompt_response_is_empty(self) -> None:
+        with patch("sys.stdin.isatty", return_value=True), patch("builtins.input", return_value=""):
+            title = _ingest_title("Carrot Soup", None)
+
+        self.assertEqual(title, "Carrot Soup")
+
+    def test_ingest_title_uses_prompt_response(self) -> None:
+        with patch("sys.stdin.isatty", return_value=True), patch("builtins.input", return_value="Friday Night Soup"):
+            title = _ingest_title("Carrot Soup", None)
+
+        self.assertEqual(title, "Friday Night Soup")
+
+    def test_ingest_title_uses_cli_override_without_prompting(self) -> None:
+        with patch("builtins.input") as prompt:
+            title = _ingest_title("Carrot Soup", "Shabbat Soup")
+
+        self.assertEqual(title, "Shabbat Soup")
+        prompt.assert_not_called()
+
+    def test_ingest_command_title_override_changes_written_file(self) -> None:
+        html = """
+        <script type="application/ld+json">
+        {"@type":"Recipe","name":"messy soup","recipeIngredient":["one carrot"],"recipeInstructions":["chop it"]}
+        </script>
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            vault = Path(temp_dir)
+            with patch("cronpot.cli.fetch_html", return_value=html), redirect_stdout(StringIO()):
+                exit_code = main(["ingest", "https://example.com/soup", "--vault", str(vault), "--title", "Carrot Soup"])
+
+            self.assertEqual(exit_code, 0)
+            self.assertTrue((vault / "Carrot Soup.md").exists())
 
 
 if __name__ == "__main__":

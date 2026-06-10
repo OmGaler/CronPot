@@ -9,6 +9,7 @@ The current implementation can:
 - fall back to simple HTML extraction when structured data is missing
 - normalise common US cooking terms to British English
 - suggest ingredient normalisation aliases through local Ollama
+- optionally rewrite newly ingested web recipes through local Ollama to match the vault style
 - infer Obsidian tags and category wikilinks
 - enforce exactly one dietary tag (`parev`, `milky`, or `meaty`) unless disabled in config
 - write idempotent Markdown recipes using a source hash
@@ -57,6 +58,7 @@ Then run `cronpot` commands from anywhere. Replace `docs` with any vault folder 
 ```powershell
 cronpot ingest "https://example.com/recipe" --vault docs
 cronpot ingest "https://example.com/recipe" --html-file saved-page.html --dry-run
+cronpot ingest "https://example.com/recipe" --vault docs --title "Friday Night Soup"
 cronpot import-vault "C:\path\to\ObsidianVault" --vault docs
 cronpot analytics --vault docs
 cronpot normalise ingredients --vault docs --suggest
@@ -72,6 +74,8 @@ cronpot start --vault docs --host 127.0.0.1 --port 8080
 ```
 
 Use `--commit` with `ingest` or `import-vault` to request a Git commit. If the current folder is not a Git repository, the commit is skipped and the Markdown files are still written.
+
+When `cronpot ingest` is run interactively, it suggests the extracted recipe name before writing. Press Enter to accept it, type a replacement to rename the recipe, or pass `--title` for non-interactive runs.
 
 ## HTTP API
 
@@ -121,6 +125,7 @@ provider = "ollama"
 base_url = "http://127.0.0.1:11434"
 model = "gemma4:latest"
 auto_normalise_ingredients = false
+rewrite_ingested_recipes = false
 ingredient_limit = 120
 ```
 
@@ -138,11 +143,31 @@ The suggestion command prints proposed analytics aliases only. It does not rewri
 
 Set `auto_normalise_ingredients = true` to let `cronpot analytics` and the dashboard use local Ollama suggestions for ingredient grouping. Dashboard aliases are cached in memory to avoid calling Ollama on every refresh.
 
+Set `rewrite_ingested_recipes = true` to let `cronpot ingest` and the HTTP `/ingest` endpoint ask the configured local LLM to rewrite extracted web recipes to match existing vault examples. CronPot still performs deterministic extraction and normalisation first, and it fails the ingest if the configured LLM cannot return valid recipe JSON.
+
 PDF export prints the rendered HTML cookbook through Microsoft Edge or Chrome, so it follows the HTML export styling and requires one of those browsers locally.
 
 ## Kubernetes
 
 The project includes a non-root `Dockerfile` and Kustomize manifests under `k8s`.
+
+For the local Kubernetes path, use the unified start helper:
+
+```cmd
+scripts\k8s-start.cmd docs
+```
+
+Or, in PowerShell:
+
+```powershell
+.\scripts\k8s-start.ps1 -Source docs
+```
+
+That renders and applies the local overlay, waits for the API Deployment, seeds the local PVC from `docs`, prints the dashboard URL, then starts port-forwarding. The command blocks while port-forwarding is active; press `Ctrl+C` to stop it. Use `-` instead of a vault path to start without seeding:
+
+```cmd
+scripts\k8s-start.cmd -
+```
 
 ```powershell
 .\scripts\k8s-render.ps1 -Overlay local
@@ -160,10 +185,14 @@ scripts\k8s-port-forward.cmd cronpot-local
 
 The overlays are:
 
-- `local`: Docker Desktop development, using `python:3.12-slim` and ConfigMap-mounted source
-- `dev`: deployable cluster environment with namespace `cronpot-dev`
-- `staging`: deployable cluster environment with namespace `cronpot-staging`
-- `production`: deployable cluster environment with namespace `cronpot`
+| Overlay | Namespace | Practical use | Code source | Vault storage |
+| --- | --- | --- | --- | --- |
+| `local` | `cronpot-local` | Fast laptop feedback loop while editing CronPot | `python:3.12-slim` plus ConfigMap-mounted source files | 1Gi PVC seeded from a local folder |
+| `dev` | `cronpot-dev` | First shared cluster deployment for integration checks | GHCR image tagged for dev | 1Gi PVC |
+| `staging` | `cronpot-staging` | Production-shaped rehearsal before release | GHCR image tagged for staging | 2Gi PVC |
+| `production` | `cronpot` | Real service namespace | GHCR release/latest image | 5Gi PVC |
+
+Only `local` is used by `scripts\k8s-start.cmd docs`. The other overlays are for cluster promotion through CI/CD or explicit deploy commands.
 
 The Kubernetes layer demonstrates a namespace, service account, config map, persistent volume claim, API deployment, service, probes, analytics cron job, network policy, and environment overlays. The API Deployment and analytics CronJob both mount `/vault` and `/config/cronpot.toml`, so dashboard analytics and scheduled analytics use the same recipe data and ingredient normalisation settings. See `k8s/README.md` for the full flow and the teaching map for each Kubernetes resource.
 
