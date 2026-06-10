@@ -1,6 +1,6 @@
 # Kubernetes Setup
 
-CronPot uses Kustomize because `kubectl` includes it and Helm is not required.
+CronPot uses Kustomize because `kubectl` includes it and Helm is not required. The manifests are intentionally plain Kubernetes so each part is visible while the project is still small.
 
 ## Layout
 
@@ -21,6 +21,20 @@ The base includes:
 - analytics CronJob
 - NetworkPolicy
 
+## Pedagogy Map
+
+| Kubernetes piece | CronPot role | What it teaches |
+| --- | --- | --- |
+| Namespace | Separates `local`, `dev`, `staging`, and `production` installs | Environment boundaries and safe namespacing |
+| ServiceAccount | Runs the API and analytics worker as a named workload identity | Least-privilege workload identity, even before RBAC grows |
+| ConfigMap | Mounts `cronpot.toml` into `/config` | Runtime configuration separate from the container image |
+| PersistentVolumeClaim | Stores the recipe vault at `/vault` | Stateful application data and why storage affects scaling |
+| Deployment | Runs the HTTP API and dashboard | Long-running workloads, probes, resources, and security context |
+| Service | Gives the API a stable in-cluster address | Service discovery independent of individual pods |
+| CronJob | Runs scheduled analytics with the same vault and config | Batch workloads sharing state and configuration with the API |
+| NetworkPolicy | Allows HTTP ingress to the API pods | Pod traffic boundaries and how policy becomes explicit |
+| Overlays | Adjust namespaces, images, PVC size, and local source mounting | Promotion between environments without duplicating the base |
+
 ## Environments
 
 | Overlay | Namespace | Image source | Vault PVC |
@@ -30,7 +44,7 @@ The base includes:
 | `staging` | `cronpot-staging` | GHCR image | 2Gi |
 | `production` | `cronpot` | GHCR image | 5Gi |
 
-Each environment currently runs one API replica. The vault is a writable PVC, so multi-replica scaling should wait until we introduce RWX storage or move mutable state into a database/object store.
+Each environment currently runs one API replica. The vault is a writable PVC, so multi-replica scaling should wait until we introduce RWX storage or move mutable state into a database/object store. That limitation is useful here: it keeps the stateful part honest instead of pretending a file-backed app can be horizontally scaled without a storage decision.
 
 ## Local Flow
 
@@ -58,12 +72,41 @@ The Docker image build is still useful for production and for learning the conta
 scripts\docker-build.cmd
 ```
 
+Use this loop when changing Kubernetes resources:
+
+```cmd
+scripts\k8s-render.cmd local
+scripts\k8s-deploy.cmd local
+kubectl -n cronpot-local rollout status deployment/cronpot-api
+```
+
+Use this loop when changing Python code used by the local overlay:
+
+```cmd
+scripts\k8s-deploy.cmd local
+scripts\k8s-port-forward.cmd cronpot-local
+```
+
+The local overlay includes every imported `cronpot` module in the source ConfigMap. If a new Python module is added and the pod fails with `ModuleNotFoundError`, add that module to `k8s/overlays/local/kustomization.yaml`.
+
 ## Seeding The Vault
 
 The local cluster starts with an empty PVC. Seed it from a local vault folder:
 
 ```cmd
 scripts\k8s-seed-vault.cmd docs cronpot-local
+```
+
+To clear the PVC first and then seed it:
+
+```cmd
+scripts\k8s-seed-vault.cmd docs cronpot-local /clear
+```
+
+PowerShell equivalent:
+
+```powershell
+.\scripts\k8s-seed-vault.ps1 -Source docs -Namespace cronpot-local -Clear
 ```
 
 Then port-forward and check analytics:
@@ -91,6 +134,37 @@ Invoke-RestMethod "http://127.0.0.1:8080/recipes/Roast%20Chicken"
 Invoke-RestMethod "http://127.0.0.1:8080/shopping-list?recipe=Aglio%20e%20Olio&recipe=Roast%20Chicken"
 ```
 
+Open the dashboard at:
+
+```text
+http://127.0.0.1:8080/dashboard
+```
+
+The dashboard reads the same vault and config as the API endpoints. The analytics CronJob also mounts `/config/cronpot.toml`, so scheduled analytics use the same ingredient normalisation settings as the dashboard.
+
+## LLM Normalisation In Kubernetes
+
+The base `cronpot.toml` includes an Ollama-oriented `[llm]` section, but `auto_normalise_ingredients` is disabled by default:
+
+```toml
+[llm]
+provider = "ollama"
+base_url = "http://ollama.ollama.svc.cluster.local:11434"
+model = "qwen2.5:3b"
+auto_normalise_ingredients = false
+ingredient_limit = 120
+```
+
+That default keeps a fresh cluster deterministic. To enable LLM-backed analytics in Kubernetes, run Ollama in-cluster or expose an existing Ollama endpoint, then update the ConfigMap and set `auto_normalise_ingredients = true`.
+
+This is a good next teaching slice because it introduces:
+
+- Kubernetes service discovery through the Ollama service DNS name
+- resource requests and limits for model-serving workloads
+- optional GPU scheduling later
+- model cache persistence through a separate PVC
+- failure isolation, because CronPot should keep serving even if the LLM is unavailable
+
 ## Troubleshooting
 
 If port-forwarding says the pod is not running, check:
@@ -114,6 +188,15 @@ After the pod is running, call:
 Invoke-RestMethod http://127.0.0.1:8080/healthz
 Invoke-RestMethod http://127.0.0.1:8080/analytics
 ```
+
+If the dashboard works locally but the scheduled analytics output looks different, inspect the CronJob pod:
+
+```cmd
+kubectl -n cronpot-local create job --from=cronjob/cronpot-analytics cronpot-analytics-manual
+kubectl -n cronpot-local logs job/cronpot-analytics-manual
+```
+
+The CronJob should mount both `/vault` and `/config`, matching the API pod.
 
 ## Cluster Deployments
 

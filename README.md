@@ -8,12 +8,13 @@ The current implementation can:
 - batch import a local Obsidian vault or cloned repository of Markdown recipes
 - fall back to simple HTML extraction when structured data is missing
 - normalise common US cooking terms to British English
+- suggest ingredient normalisation aliases through local Ollama
 - infer Obsidian tags and category wikilinks
 - enforce exactly one dietary tag (`parev`, `milky`, or `meaty`) unless disabled in config
 - write idempotent Markdown recipes using a source hash
-- analyse a vault
-- export shopping lists, Markdown bundles, and standalone HTML cookbooks
-- run as a containerised HTTP service for Kubernetes deployment
+- analyse a vault with canonical ingredient grouping for common aliases
+- export shopping lists, Markdown bundles, standalone HTML cookbooks, and rendered Markdown PDFs
+- run as a containerised HTTP service with a built-in dashboard
 - test, build, publish, and deploy through GitHub Actions
 
 The code uses only the Python standard library.
@@ -58,11 +59,15 @@ cronpot ingest "https://example.com/recipe" --vault docs
 cronpot ingest "https://example.com/recipe" --html-file saved-page.html --dry-run
 cronpot import-vault "C:\path\to\ObsidianVault" --vault docs
 cronpot analytics --vault docs
+cronpot normalise ingredients --vault docs --suggest
 cronpot export "Aglio e Olio" --vault docs
 cronpot export --all --vault docs --output cookbook.html
+cronpot export --all --vault docs --format pdf --output cookbook.pdf
+cronpot export "Aglio e Olio" --vault docs --format pdf
 cronpot export "Aglio e Olio" --vault docs --format markdown --output recipe-bundle.md
 cronpot export "Aglio e Olio" "Roast Chicken" --vault docs --format shopping-list
 cronpot validate --vault docs
+cronpot start
 cronpot start --vault docs --host 127.0.0.1 --port 8080
 ```
 
@@ -75,6 +80,8 @@ Run locally:
 ```powershell
 cronpot start --vault docs --host 127.0.0.1 --port 8080
 ```
+
+`cronpot start` prints the URL it is serving before it starts the blocking server process. Open the dashboard at `http://127.0.0.1:8080/` or `http://127.0.0.1:8080/dashboard`.
 
 Or use Kubernetes port-forwarding:
 
@@ -108,9 +115,30 @@ Copy `cronpot.example.toml` to `cronpot.toml` when you want project-specific set
 [recipe]
 default_vault = "docs"
 require_dietary_tag = true
+
+[llm]
+provider = "ollama"
+base_url = "http://127.0.0.1:11434"
+model = "gemma4:latest"
+auto_normalise_ingredients = false
+ingredient_limit = 120
 ```
 
 Set `require_dietary_tag = false` only if you intentionally want to allow recipes without exactly one of `parev`, `milky`, or `meaty`.
+
+For local LLM suggestions, install Ollama, start it, and pull the configured model:
+
+```powershell
+ollama serve
+ollama pull gemma4:latest
+cronpot normalise ingredients --vault docs --suggest
+```
+
+The suggestion command prints proposed analytics aliases only. It does not rewrite recipe Markdown or config.
+
+Set `auto_normalise_ingredients = true` to let `cronpot analytics` and the dashboard use local Ollama suggestions for ingredient grouping. Dashboard aliases are cached in memory to avoid calling Ollama on every refresh.
+
+PDF export prints the rendered HTML cookbook through Microsoft Edge or Chrome, so it follows the HTML export styling and requires one of those browsers locally.
 
 ## Kubernetes
 
@@ -137,12 +165,18 @@ The overlays are:
 - `staging`: deployable cluster environment with namespace `cronpot-staging`
 - `production`: deployable cluster environment with namespace `cronpot`
 
-The Kubernetes layer demonstrates a namespace, service account, config map, persistent volume claim, API deployment, service, probes, analytics cron job, network policy, and environment overlays. See `k8s/README.md` for the full flow.
+The Kubernetes layer demonstrates a namespace, service account, config map, persistent volume claim, API deployment, service, probes, analytics cron job, network policy, and environment overlays. The API Deployment and analytics CronJob both mount `/vault` and `/config/cronpot.toml`, so dashboard analytics and scheduled analytics use the same recipe data and ingredient normalisation settings. See `k8s/README.md` for the full flow and the teaching map for each Kubernetes resource.
 
 Seed the local Kubernetes PVC from a local vault:
 
 ```cmd
 scripts\k8s-seed-vault.cmd docs cronpot-local
+```
+
+To reset the local PVC before copying the vault:
+
+```cmd
+scripts\k8s-seed-vault.cmd docs cronpot-local /clear
 ```
 
 Current local prerequisites: Docker Desktop must be running, and a Kubernetes context must be configured. `kubectl` is available on this machine; Helm is not required.

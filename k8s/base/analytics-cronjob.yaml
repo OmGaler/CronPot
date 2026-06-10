@@ -30,6 +30,8 @@ spec:
                 - --vault
                 - /vault
                 - --json
+                - --config
+                - /config/cronpot.toml
               resources:
                 requests:
                   cpu: 25m
@@ -46,7 +48,13 @@ spec:
               volumeMounts:
                 - name: vault
                   mountPath: /vault
+                - name: config
+                  mountPath: /config
+                  readOnly: true
           volumes:
             - name: vault
               persistentVolumeClaim:
                 claimName: cronpot-vault
+            - name: config
+              configMap:
+                name: cronpot-config

@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from cronpot.analytics import analyse_vault, build_shopping_list, html_cookbook
+from cronpot.analytics import analyse_vault, build_shopping_list, html_cookbook, pdf_cookbook
 from cronpot.models import Recipe
 from cronpot.vault import write_recipe_to_vault
 
@@ -41,6 +41,63 @@ class AnalyticsTests(unittest.TestCase):
             self.assertEqual(analytics.category_counts["Desserts"], 1)
             self.assertEqual(analytics.ingredient_counts["apples"], 2)
 
+    def test_groups_common_ingredient_aliases_for_analytics(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            vault = Path(temp_dir)
+            write_recipe_to_vault(
+                Recipe(
+                    title="Cake",
+                    ingredients=[
+                        "100g granulated sugar",
+                        "2 tablespoons white sugar, divided",
+                        "1 cup sugar",
+                        "1 tsp sea salt",
+                        "fine salt to taste",
+                        "salt and pepper",
+                        "freshly ground black pepper",
+                        "1 egg",
+                        "2 eggs",
+                        "100g flour",
+                        "100g plain flour",
+                    ],
+                    steps=["Bake."],
+                    tags=["dessert", "parev"],
+                    categories=["Desserts"],
+                ),
+                vault,
+            )
+
+            analytics = analyse_vault(vault)
+
+            self.assertEqual(analytics.ingredient_counts["sugar"], 3)
+            self.assertEqual(analytics.ingredient_counts["salt"], 3)
+            self.assertEqual(analytics.ingredient_counts["pepper"], 2)
+            self.assertEqual(analytics.ingredient_counts["eggs"], 2)
+            self.assertEqual(analytics.ingredient_counts["plain flour"], 2)
+            self.assertNotIn("granulated sugar", analytics.ingredient_counts)
+            self.assertNotIn("white sugar divided", analytics.ingredient_counts)
+            self.assertNotIn("egg", analytics.ingredient_counts)
+            self.assertNotIn("flour", analytics.ingredient_counts)
+
+    def test_applies_external_ingredient_aliases_for_analytics(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            vault = Path(temp_dir)
+            write_recipe_to_vault(
+                Recipe(
+                    title="Cake",
+                    ingredients=["100g extra fine sugar", "50g sugar"],
+                    steps=["Bake."],
+                    tags=["dessert", "parev"],
+                    categories=["Desserts"],
+                ),
+                vault,
+            )
+
+            analytics = analyse_vault(vault, ingredient_aliases={"extra fine sugar": "sugar"})
+
+            self.assertEqual(analytics.ingredient_counts["sugar"], 2)
+            self.assertNotIn("extra fine sugar", analytics.ingredient_counts)
+
     def test_builds_deduplicated_shopping_list(self) -> None:
         items = build_shopping_list(
             [
@@ -76,6 +133,25 @@ class AnalyticsTests(unittest.TestCase):
         self.assertIn("Oil &amp; salt", output)
         self.assertIn('href="https://example.com/recipe?name=fish&amp;note=&quot;hot&quot;"', output)
         self.assertNotIn("1 <large> fish", output)
+
+    def test_builds_pdf_cookbook(self) -> None:
+        output = pdf_cookbook(
+            [
+                (
+                    Path("Aglio e Olio.md"),
+                    Recipe(
+                        title="Aglio e Olio",
+                        ingredients=["100g spaghetti"],
+                        steps=["Boil the pasta."],
+                        tags=["parev"],
+                        categories=["Mains"],
+                    ),
+                )
+            ]
+        )
+
+        self.assertTrue(output.startswith(b"%PDF-"))
+        self.assertTrue(output.rstrip().endswith(b"%%EOF"))
 
 
 if __name__ == "__main__":

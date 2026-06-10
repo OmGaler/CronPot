@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import re
+import subprocess
+import tempfile
+from collections.abc import Iterable
 from collections import Counter
 from dataclasses import dataclass
 from html import escape
@@ -20,7 +23,28 @@ class CookbookAnalytics:
     recipes_missing_source: int
 
 
-def analyse_vault(vault_path: Path | str) -> CookbookAnalytics:
+INGREDIENT_ALIASES: dict[str, str] = {
+    "caster sugar": "sugar",
+    "granulated sugar": "sugar",
+    "superfine sugar": "sugar",
+    "white sugar": "sugar",
+    "table salt": "salt",
+    "sea salt": "salt",
+    "kosher salt": "salt",
+    "fine salt": "salt",
+    "egg": "eggs",
+    "flour": "plain flour",
+    "plain white flour": "plain flour",
+    "unsalted butter": "butter",
+    "salted butter": "butter",
+    "whole milk": "milk",
+    "full fat milk": "milk",
+    "black pepper": "pepper",
+    "white pepper": "pepper",
+}
+
+
+def analyse_vault(vault_path: Path | str, ingredient_aliases: dict[str, str] | None = None) -> CookbookAnalytics:
     recipes = [recipe for _path, recipe in load_recipes(vault_path)]
     tag_counts: Counter[str] = Counter()
     category_counts: Counter[str] = Counter()
@@ -30,7 +54,7 @@ def analyse_vault(vault_path: Path | str) -> CookbookAnalytics:
     for recipe in recipes:
         tag_counts.update(recipe.tags)
         category_counts.update(category.title() for category in recipe.categories)
-        ingredient_counts.update(_ingredient_key(item) for item in recipe.ingredients if _ingredient_key(item))
+        ingredient_counts.update(key for item in recipe.ingredients for key in _ingredient_keys(item, ingredient_aliases=ingredient_aliases))
         if not recipe.source:
             missing_source += 1
 
@@ -87,6 +111,8 @@ def html_cookbook(recipes: list[tuple[Path, Recipe]], title: str = "CronPot Cook
             "    article { border-top: 1px solid #ddd; padding: 1.5rem 0; }",
             "    .meta { color: #555; display: flex; flex-wrap: wrap; gap: .5rem 1rem; }",
             "    .tags { color: #555; font-size: .95rem; }",
+            "    @page { margin: 18mm; }",
+            "    @media print { body { margin: 0; max-width: none; padding: 0; } article { break-inside: avoid; } }",
             "  </style>",
             "</head>",
             "<body>",
@@ -98,6 +124,58 @@ def html_cookbook(recipes: list[tuple[Path, Recipe]], title: str = "CronPot Cook
             "",
         ]
     )
+
+
+def pdf_cookbook(recipes: list[tuple[Path, Recipe]], title: str = "CronPot Cookbook") -> bytes:
+    browser = _pdf_browser_path()
+    if browser is None:
+        raise RuntimeError("PDF export requires Microsoft Edge or Chrome for HTML rendering.")
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+        html_path = temp_path / "cookbook.html"
+        pdf_path = temp_path / "cookbook.pdf"
+        profile_path = temp_path / "browser-profile"
+        html_path.write_text(html_cookbook(recipes, title), encoding="utf-8", newline="\n")
+        try:
+            result = subprocess.run(
+                [
+                    str(browser),
+                    "--headless",
+                    "--disable-gpu",
+                    "--disable-background-networking",
+                    "--disable-extensions",
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                    "--no-pdf-header-footer",
+                    f"--user-data-dir={profile_path}",
+                    f"--print-to-pdf={pdf_path}",
+                    html_path.as_uri(),
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=60,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError("Could not render PDF: browser timed out while printing HTML.") from exc
+        if result.returncode != 0 or not pdf_path.exists():
+            output = (result.stderr or result.stdout or "browser PDF generation failed").strip()
+            raise RuntimeError(f"Could not render PDF: {output}")
+        return pdf_path.read_bytes()
+
+
+def _pdf_browser_path() -> Path | None:
+    candidates = [
+        Path(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"),
+        Path(r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"),
+        Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
+        Path(r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"),
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
 
 
 def _html_recipe(path: Path, recipe: Recipe) -> str:
@@ -138,15 +216,48 @@ def _html_recipe(path: Path, recipe: Recipe) -> str:
 
 
 def _ingredient_key(value: str) -> str:
+    keys = _ingredient_keys(value)
+    return keys[0] if keys else ""
+
+
+def _ingredient_keys(value: str, apply_aliases: bool = True, ingredient_aliases: dict[str, str] | None = None) -> list[str]:
     text = normalise_text(value).casefold()
     text = re.sub(r"\([^)]*\)", "", text)
     text = re.sub(r"^\d+[\d\s./-]*", "", text)
     text = re.sub(
-        r"\b(cup|cups|g|kg|ml|l|tsp|tbsp|teaspoon|tablespoon|oz|lb|pinch|handful|small|medium|large)\b",
+        r"\b(cup|cups|g|kg|ml|l|tsp|tbsp|teaspoon|teaspoons|tablespoon|tablespoons|oz|lb|pinch|handful|small|medium|large)\b",
         " ",
         text,
     )
-    text = re.sub(r"\b(of|a|an|the|fresh|chopped|finely|thinly|sliced|diced|to|taste)\b", " ", text)
+    text = re.sub(
+        r"\b(of|a|an|the|fresh|freshly|ground|chopped|finely|thinly|sliced|diced|melted|softened|divided|optional|to|taste)\b",
+        " ",
+        text,
+    )
     text = re.sub(r"[^a-z0-9 ]+", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
-    return text
+    if not text:
+        return []
+    parts = [part.strip() for part in re.split(r"\band\b", text) if part.strip()]
+    if len(parts) > 1:
+        return _unique_keys(_canonical_ingredient(part, apply_aliases, ingredient_aliases) for part in parts)
+    return [_canonical_ingredient(text, apply_aliases, ingredient_aliases)]
+
+
+def _canonical_ingredient(value: str, apply_aliases: bool, ingredient_aliases: dict[str, str] | None = None) -> str:
+    if not apply_aliases:
+        return value
+    deterministic = INGREDIENT_ALIASES.get(value, value)
+    if ingredient_aliases and deterministic == value:
+        return ingredient_aliases.get(value, value)
+    return deterministic
+
+
+def _unique_keys(values: Iterable[str]) -> list[str]:
+    seen: set[str] = set()
+    unique: list[str] = []
+    for value in values:
+        if isinstance(value, str) and value and value not in seen:
+            unique.append(value)
+            seen.add(value)
+    return unique

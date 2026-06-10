@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
-from cronpot.analytics import analyse_vault, build_shopping_list, bundle_markdown, html_cookbook
+from cronpot.analytics import analyse_vault, build_shopping_list, bundle_markdown, html_cookbook, pdf_cookbook
 from cronpot.config import load_config
 from cronpot.extraction import extract_recipe, fetch_html
 from cronpot.importing import import_markdown_vault
+from cronpot.llm import LlmError, suggest_ingredient_alias_map, suggest_ingredient_aliases
 from cronpot.models import Recipe
 from cronpot.normalisation import normalise_recipe
 from cronpot.server import run_server
@@ -59,13 +61,23 @@ def build_parser() -> argparse.ArgumentParser:
     analytics.add_argument("--top", type=int, default=10, help="Number of top values to show.")
     analytics.set_defaults(func=cmd_analytics)
 
+    normalise = subparsers.add_parser("normalise", parents=[config_parent], help="Suggest or apply normalisation improvements.")
+    normalise_subparsers = normalise.add_subparsers(dest="normalise_command", required=True)
+    normalise_ingredients = normalise_subparsers.add_parser("ingredients", help="Suggest canonical ingredient aliases with the configured LLM.")
+    normalise_ingredients.add_argument("--vault", default=None)
+    normalise_ingredients.add_argument("--suggest", action="store_true", help="Print suggested aliases without changing config or recipes.")
+    normalise_ingredients.add_argument("--limit", type=int, default=80, help="Number of common ingredient keys to send to the LLM.")
+    normalise_ingredients.add_argument("--model", help="Override the configured Ollama model.")
+    normalise_ingredients.add_argument("--base-url", help="Override the configured Ollama base URL.")
+    normalise_ingredients.set_defaults(func=cmd_normalise_ingredients)
+
     export = subparsers.add_parser("export", parents=[config_parent], help="Export recipes as HTML, Markdown, or a shopping list.")
     export.add_argument("recipes", nargs="*", help="Recipe names, Markdown files, or stems.")
     export.add_argument("--vault", default=None)
     export.add_argument("--all", action="store_true", help="Use every recipe in the vault.")
     export.add_argument(
         "--format",
-        choices=["html", "markdown", "shopping-list"],
+        choices=["html", "markdown", "pdf", "shopping-list"],
         default="html",
         help="Export format.",
     )
@@ -189,7 +201,8 @@ def cmd_validate(args: argparse.Namespace) -> int:
 
 def cmd_analytics(args: argparse.Namespace) -> int:
     config = load_config(args.config)
-    analytics = analyse_vault(_vault_path(args, config))
+    vault = _vault_path(args, config)
+    analytics = analyse_vault(vault, ingredient_aliases=_llm_ingredient_aliases(vault, config))
     if args.json:
         print(
             json.dumps(
@@ -213,6 +226,34 @@ def cmd_analytics(args: argparse.Namespace) -> int:
     return 0
 
 
+def _llm_ingredient_aliases(vault_path: str, config: object) -> dict[str, str]:
+    if not getattr(config, "llm_auto_normalise_ingredients", False):
+        return {}
+    try:
+        return suggest_ingredient_alias_map(vault_path, config, limit=getattr(config, "llm_ingredient_limit", 120))
+    except LlmError as exc:
+        print(f"LLM ingredient normalisation skipped: {exc}", file=sys.stderr)
+        return {}
+
+
+def cmd_normalise_ingredients(args: argparse.Namespace) -> int:
+    if not args.suggest:
+        raise ValueError("Only --suggest is currently supported.")
+    config = load_config(args.config)
+    if args.model:
+        config.llm_model = args.model
+    if args.base_url:
+        config.llm_base_url = args.base_url.rstrip("/")
+    suggestions = suggest_ingredient_aliases(_vault_path(args, config), config, limit=args.limit)
+    if not suggestions:
+        print("No ingredient alias suggestions found.")
+        return 0
+    print("Suggested ingredient aliases:")
+    for suggestion in suggestions:
+        print(f"- {suggestion.source} -> {suggestion.canonical} ({suggestion.count})")
+    return 0
+
+
 def cmd_shopping_list(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     recipes = _select_recipes(_vault_path(args, config), args.recipes, args.all)
@@ -230,6 +271,9 @@ def cmd_export(args: argparse.Namespace) -> int:
     elif args.format == "shopping-list":
         items = build_shopping_list([recipe for _path, recipe in recipes])
         output = "Shopping list\n" + "\n".join(f"- {item}" for item in items) + "\n"
+    elif args.format == "pdf":
+        _write_bytes(pdf_cookbook(recipes, title=args.title), args.output or _default_export_path(recipes, "pdf"))
+        return 0
     else:
         output = html_cookbook(recipes, title=args.title)
     _write_or_print(output, args.output)
@@ -254,7 +298,10 @@ def cmd_html(args: argparse.Namespace) -> int:
 
 def cmd_serve(args: argparse.Namespace) -> int:
     config = load_config(args.config)
-    run_server(args.host, args.port, _vault_path(args, config), config)
+    host = args.host
+    port = args.port
+    print(f"CronPot serving on http://{host}:{port}", flush=True)
+    run_server(host, port, _vault_path(args, config), config)
     return 0
 
 
@@ -263,7 +310,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return args.func(args)
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, LlmError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
 
@@ -296,3 +343,20 @@ def _write_or_print(output: str, destination: str | None) -> None:
         print(f"Wrote {destination}")
     else:
         print(output, end="")
+
+
+def _write_bytes(output: bytes, destination: str) -> None:
+    Path(destination).write_bytes(output)
+    print(f"Wrote {destination}")
+
+
+def _default_export_path(recipes: list[tuple[Path, Recipe]], extension: str) -> str:
+    if len(recipes) == 1:
+        name = recipes[0][1].title or recipes[0][0].stem
+    elif recipes:
+        name = "cookbook"
+    else:
+        name = "cronpot-export"
+    clean = "".join(character for character in name if character not in '<>:"/\\|?*').strip(" .")
+    clean = re.sub(r"\s+", " ", clean)
+    return f"{clean or 'cronpot-export'}.{extension}"

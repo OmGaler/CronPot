@@ -7,3 +7,10 @@ data:
     [recipe]
     default_vault = "/vault"
     require_dietary_tag = true
+
+    [llm]
+    provider = "ollama"
+    base_url = "http://ollama.ollama.svc.cluster.local:11434"
+    model = "qwen2.5:3b"
+    auto_normalise_ingredients = true
+    ingredient_limit = 120
