@@ -8,6 +8,19 @@ data:
     default_vault = "/vault"
     require_dietary_tag = true
 
+    [schema]
+    ingredient_heading = "Ingredients"
+    method_heading = "Method"
+    frontmatter_fields = ["tags", "source", "source_hash", "prep_time", "cook_time", "total_time", "servings", "yield"]
+
+    [style]
+    english = "british"
+    fraction_style = "unicode"
+    method_style = "imperative"
+
+    [worker]
+    count = 2
+
     [llm]
     provider = "ollama"
     base_url = "http://ollama.ollama.svc.cluster.local:11434"

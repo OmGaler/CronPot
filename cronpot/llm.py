@@ -41,7 +41,7 @@ def rewrite_recipe_to_vault_style(recipe: Recipe, vault_path: str, config: Autom
         raise LlmError(f"Unsupported LLM provider: {config.llm_provider}")
 
     _ensure_ollama_model_available(config)
-    response = _call_ollama(config, _recipe_rewrite_prompt(recipe, vault_path))
+    response = _call_ollama(config, _recipe_rewrite_prompt(recipe, vault_path, config))
     rewritten = _parse_recipe_response(response)
     return replace(
         recipe,
@@ -65,7 +65,7 @@ def _ingredient_alias_candidates(vault_path: str, config: AutomationConfig, limi
         raise LlmError(f"Unsupported LLM provider: {config.llm_provider}")
 
     _ensure_ollama_model_available(config)
-    ingredient_counts = _ingredient_counts(vault_path)
+    ingredient_counts = _ingredient_counts(vault_path, config)
     candidates = [name for name, _count in ingredient_counts.most_common(limit)]
     if not candidates:
         return {}, ingredient_counts
@@ -75,9 +75,9 @@ def _ingredient_alias_candidates(vault_path: str, config: AutomationConfig, limi
     return aliases, ingredient_counts
 
 
-def _ingredient_counts(vault_path: str) -> Counter[str]:
+def _ingredient_counts(vault_path: str, config: AutomationConfig | None = None) -> Counter[str]:
     counts: Counter[str] = Counter()
-    for _path, recipe in load_recipes(vault_path):
+    for _path, recipe in load_recipes(vault_path, config):
         for ingredient in recipe.ingredients:
             counts.update(_ingredient_keys(ingredient, apply_aliases=False))
     return counts
@@ -163,8 +163,8 @@ def _ingredient_alias_prompt(ingredients: list[str]) -> str:
     )
 
 
-def _recipe_rewrite_prompt(recipe: Recipe, vault_path: str, sample_limit: int = 3) -> str:
-    examples = _vault_style_examples(vault_path, sample_limit)
+def _recipe_rewrite_prompt(recipe: Recipe, vault_path: str, config: AutomationConfig, sample_limit: int = 3) -> str:
+    examples = _vault_style_examples(vault_path, config, sample_limit)
     examples_text = "\n\n---\n\n".join(examples) if examples else "No existing vault examples are available yet."
     payload = {
         "title": recipe.title,
@@ -182,7 +182,8 @@ def _recipe_rewrite_prompt(recipe: Recipe, vault_path: str, sample_limit: int = 
     return (
         "You are rewriting an extracted web recipe for a personal Obsidian cookbook.\n"
         "Preserve the recipe facts: do not add ingredients, remove ingredients, invent timings, or change the source.\n"
-        "Clean messy wording, use British English, keep ingredient lines concise, and write method steps as clear imperative instructions.\n"
+        f"Use {config.english} English. Use {config.fraction_style} fractions. Write method steps in a {config.method_style} style.\n"
+        "Clean messy wording, keep ingredient lines concise, and preserve the configured style conventions.\n"
         "Match the style of the existing vault examples where possible.\n"
         "Return JSON only, in this exact shape: "
         "{\"recipe\":{\"title\":\"\",\"ingredients\":[\"\"],\"steps\":[\"\"],\"prep_time\":\"\",\"cook_time\":\"\",\"total_time\":\"\",\"servings\":\"\",\"yield\":\"\",\"tags\":[\"\"],\"categories\":[\"\"]}}.\n\n"
@@ -191,9 +192,9 @@ def _recipe_rewrite_prompt(recipe: Recipe, vault_path: str, sample_limit: int = 
     )
 
 
-def _vault_style_examples(vault_path: str, limit: int) -> list[str]:
+def _vault_style_examples(vault_path: str, config: AutomationConfig, limit: int) -> list[str]:
     examples: list[str] = []
-    for path, recipe in load_recipes(vault_path)[:limit]:
+    for path, recipe in load_recipes(vault_path, config)[:limit]:
         examples.append(f"Recipe title: {recipe.title or path.stem}\n{render_markdown(recipe).strip()}")
     return examples
 

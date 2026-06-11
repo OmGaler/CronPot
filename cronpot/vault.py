@@ -29,28 +29,29 @@ def source_hash(source: str) -> str:
     return hashlib.sha256(source.strip().encode("utf-8")).hexdigest()[:16] if source.strip() else ""
 
 
-def render_markdown(recipe: Recipe) -> str:
+def render_markdown(recipe: Recipe, config: AutomationConfig | None = None) -> str:
+    config = config or AutomationConfig()
     recipe_hash = recipe.source_hash or source_hash(recipe.source)
-    lines = [
-        "---",
-        "tags:",
-    ]
-    for tag in recipe.tags:
-        lines.append(f"  - {tag}")
-    if recipe.source:
-        lines.append(f"source: {_yaml_string(recipe.source)}")
-    if recipe_hash:
-        lines.append(f"source_hash: {_yaml_string(recipe_hash)}")
-    if recipe.prep_time:
-        lines.append(f"prep_time: {_yaml_string(recipe.prep_time)}")
-    if recipe.cook_time:
-        lines.append(f"cook_time: {_yaml_string(recipe.cook_time)}")
-    if recipe.total_time:
-        lines.append(f"total_time: {_yaml_string(recipe.total_time)}")
-    if recipe.servings:
-        lines.append(f"servings: {_yaml_string(recipe.servings)}")
-    elif recipe.yield_amount:
-        lines.append(f"yield: {_yaml_string(recipe.yield_amount)}")
+    lines = ["---"]
+    for field in _frontmatter_fields(config):
+        if field == "tags":
+            lines.append("tags:")
+            for tag in recipe.tags:
+                lines.append(f"  - {tag}")
+        elif field == "source" and recipe.source:
+            lines.append(f"source: {_yaml_string(recipe.source)}")
+        elif field == "source_hash" and recipe_hash:
+            lines.append(f"source_hash: {_yaml_string(recipe_hash)}")
+        elif field == "prep_time" and recipe.prep_time:
+            lines.append(f"prep_time: {_yaml_string(recipe.prep_time)}")
+        elif field == "cook_time" and recipe.cook_time:
+            lines.append(f"cook_time: {_yaml_string(recipe.cook_time)}")
+        elif field == "total_time" and recipe.total_time:
+            lines.append(f"total_time: {_yaml_string(recipe.total_time)}")
+        elif field == "servings" and recipe.servings:
+            lines.append(f"servings: {_yaml_string(recipe.servings)}")
+        elif field == "yield" and not recipe.servings and recipe.yield_amount:
+            lines.append(f"yield: {_yaml_string(recipe.yield_amount)}")
     lines.append("---")
     lines.append("")
 
@@ -59,18 +60,19 @@ def render_markdown(recipe: Recipe) -> str:
     if recipe.categories:
         lines.append("")
 
-    lines.append("## Ingredients")
+    lines.append(f"## {_ingredient_heading(config)}")
     for ingredient in recipe.ingredients:
         lines.append(f"- {ingredient}")
     lines.append("")
-    lines.append("## Method")
+    lines.append(f"## {_method_heading(config)}")
     for index, step in enumerate(recipe.steps, start=1):
         lines.append(f"{index}. {step}")
     lines.append("")
     return "\n".join(lines)
 
 
-def parse_markdown_recipe(path: Path, text: str | None = None) -> Recipe:
+def parse_markdown_recipe(path: Path, text: str | None = None, config: AutomationConfig | None = None) -> Recipe:
+    config = config or AutomationConfig()
     raw = path.read_text(encoding="utf-8") if text is None else text
     metadata = _parse_front_matter(raw)
     title = metadata.get("title") or path.stem
@@ -80,8 +82,8 @@ def parse_markdown_recipe(path: Path, text: str | None = None) -> Recipe:
 
     return Recipe(
         title=str(title),
-        ingredients=_extract_ingredients(raw),
-        steps=_extract_steps(raw),
+        ingredients=_extract_ingredients(raw, config),
+        steps=_extract_steps(raw, config),
         prep_time=str(metadata.get("prep_time", "")),
         cook_time=str(metadata.get("cook_time", "")),
         total_time=str(metadata.get("total_time", "")),
@@ -94,17 +96,17 @@ def parse_markdown_recipe(path: Path, text: str | None = None) -> Recipe:
     )
 
 
-def load_recipes(vault_path: Path | str) -> list[tuple[Path, Recipe]]:
+def load_recipes(vault_path: Path | str, config: AutomationConfig | None = None) -> list[tuple[Path, Recipe]]:
     vault = Path(vault_path)
     recipes: list[tuple[Path, Recipe]] = []
     for path in sorted(vault.glob("*.md")):
-        recipe = parse_markdown_recipe(path)
+        recipe = parse_markdown_recipe(path, config=config)
         if recipe.ingredients or recipe.steps:
             recipes.append((path, recipe))
     return recipes
 
 
-def write_recipe_to_vault(recipe: Recipe, vault_path: Path | str, overwrite: bool = True) -> Path:
+def write_recipe_to_vault(recipe: Recipe, vault_path: Path | str, overwrite: bool = True, config: AutomationConfig | None = None) -> Path:
     vault = Path(vault_path)
     vault.mkdir(parents=True, exist_ok=True)
     recipe_hash = recipe.source_hash or source_hash(recipe.source)
@@ -116,7 +118,7 @@ def write_recipe_to_vault(recipe: Recipe, vault_path: Path | str, overwrite: boo
         raise FileExistsError(f"Recipe already exists for this source: {target}")
 
     recipe.source_hash = recipe_hash
-    target.write_text(render_markdown(recipe), encoding="utf-8", newline="\n")
+    target.write_text(render_markdown(recipe, config), encoding="utf-8", newline="\n")
     return target
 
 
@@ -249,8 +251,8 @@ def _extract_categories(text: str) -> list[str]:
     return _unique(categories)
 
 
-def _extract_ingredients(text: str) -> list[str]:
-    section = _extract_section(text, "Ingredients")
+def _extract_ingredients(text: str, config: AutomationConfig) -> list[str]:
+    section = _extract_section(text, _ingredient_heading(config)) or _extract_section(text, "Ingredients")
     ingredients: list[str] = []
     for line in section.splitlines():
         stripped = line.strip()
@@ -259,8 +261,8 @@ def _extract_ingredients(text: str) -> list[str]:
     return ingredients
 
 
-def _extract_steps(text: str) -> list[str]:
-    section = _extract_section(text, "Method")
+def _extract_steps(text: str, config: AutomationConfig) -> list[str]:
+    section = _extract_section(text, _method_heading(config)) or _extract_section(text, "Method")
     steps: list[str] = []
     for line in section.splitlines():
         match = re.match(r"\s*\d+\.\s+(.*)", line)
@@ -314,3 +316,20 @@ def _unique(values: list[str]) -> list[str]:
             unique.append(value)
             seen.add(key)
     return unique
+
+
+def _frontmatter_fields(config: AutomationConfig) -> tuple[str, ...]:
+    fields = getattr(config, "frontmatter_fields", AutomationConfig.frontmatter_fields)
+    if not isinstance(fields, tuple):
+        return AutomationConfig.frontmatter_fields
+    return fields
+
+
+def _ingredient_heading(config: AutomationConfig) -> str:
+    value = getattr(config, "ingredient_heading", "Ingredients")
+    return value if isinstance(value, str) and value.strip() else "Ingredients"
+
+
+def _method_heading(config: AutomationConfig) -> str:
+    value = getattr(config, "method_heading", "Method")
+    return value if isinstance(value, str) and value.strip() else "Method"

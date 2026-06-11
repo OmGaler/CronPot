@@ -160,6 +160,23 @@ class ServerTests(unittest.TestCase):
         self.assertTrue((self.vault / "Carrot Soup.md").exists())
         rewrite.assert_called_once()
 
+    def test_post_background_ingest_queues_job_and_run_endpoint_processes_it(self) -> None:
+        html = """
+        <script type="application/ld+json">
+        {"@type":"Recipe","name":"Queued Soup","recipeIngredient":["1 carrot"],"recipeInstructions":["chop it"]}
+        </script>
+        """
+
+        queued = self.post_json("/jobs/ingest", {"url": "https://example.com/queued-soup"})
+        self.assertEqual(queued["status"], "pending")
+
+        with patch("cronpot.jobs.fetch_html", return_value=html):
+            run = self.post_json("/jobs/run", {})
+
+        self.assertEqual(run["jobs"][0]["status"], "complete")
+        detail = self.get_json(f"/jobs/{queued['id']}")
+        self.assertEqual(detail["title"], "Queued Soup")
+
     def get_json(self, path: str) -> dict[str, object]:
         with urlopen(f"{self.base_url}{path}", timeout=5) as response:
             return json.loads(response.read().decode("utf-8"))

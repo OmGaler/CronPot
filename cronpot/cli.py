@@ -4,6 +4,7 @@ import argparse
 import json
 import re
 import sys
+import time
 from pathlib import Path
 
 from cronpot.analytics import analyse_vault, build_shopping_list, bundle_markdown, html_cookbook, pdf_cookbook
@@ -11,6 +12,7 @@ from cronpot.config import load_config
 from cronpot.extraction import fetch_html
 from cronpot.ingest import prepare_ingested_recipe
 from cronpot.importing import import_markdown_vault
+from cronpot.jobs import enqueue_ingest_job, job_to_dict, list_jobs, run_pending_jobs
 from cronpot.llm import LlmError, suggest_ingredient_alias_map, suggest_ingredient_aliases
 from cronpot.models import Recipe
 from cronpot.server import run_server
@@ -71,6 +73,28 @@ def build_parser() -> argparse.ArgumentParser:
     normalise_ingredients.add_argument("--model", help="Override the configured Ollama model.")
     normalise_ingredients.add_argument("--base-url", help="Override the configured Ollama base URL.")
     normalise_ingredients.set_defaults(func=cmd_normalise_ingredients)
+
+    jobs = subparsers.add_parser("jobs", parents=[config_parent], help="Queue and inspect background jobs.")
+    jobs_subparsers = jobs.add_subparsers(dest="jobs_command", required=True)
+    jobs_ingest = jobs_subparsers.add_parser("ingest", help="Queue a URL ingest job.")
+    jobs_ingest.add_argument("url")
+    jobs_ingest.add_argument("--vault", default=None)
+    jobs_ingest.set_defaults(func=cmd_jobs_ingest)
+    jobs_list = jobs_subparsers.add_parser("list", help="List queued ingest jobs.")
+    jobs_list.add_argument("--vault", default=None)
+    jobs_list.set_defaults(func=cmd_jobs_list)
+    jobs_run = jobs_subparsers.add_parser("run", help="Run pending ingest jobs.")
+    jobs_run.add_argument("--vault", default=None)
+    jobs_run.add_argument("--workers", type=int, default=None, help="Number of parallel workers.")
+    jobs_run.add_argument("--limit", type=int, default=None, help="Maximum jobs to process.")
+    jobs_run.set_defaults(func=cmd_jobs_run)
+
+    worker = subparsers.add_parser("worker", parents=[config_parent], help="Process queued background jobs.")
+    worker.add_argument("--vault", default=None)
+    worker.add_argument("--workers", type=int, default=None, help="Number of parallel workers.")
+    worker.add_argument("--limit", type=int, default=None, help="Maximum jobs to process before exiting.")
+    worker.add_argument("--once", action="store_true", help="Process the current queue and exit.")
+    worker.set_defaults(func=cmd_worker)
 
     export = subparsers.add_parser("export", parents=[config_parent], help="Export recipes as HTML, Markdown, or a shopping list.")
     export.add_argument("recipes", nargs="*", help="Recipe names, Markdown files, or stems.")
@@ -142,10 +166,10 @@ def cmd_ingest(args: argparse.Namespace) -> int:
         return 2
 
     if args.dry_run:
-        print(render_markdown(recipe), end="")
+        print(render_markdown(recipe, config), end="")
         return 0
 
-    target = write_recipe_to_vault(recipe, vault, overwrite=not args.no_overwrite)
+    target = write_recipe_to_vault(recipe, vault, overwrite=not args.no_overwrite, config=config)
     print(f"Wrote {target}")
 
     if args.commit:
@@ -204,7 +228,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
 def cmd_analytics(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     vault = _vault_path(args, config)
-    analytics = analyse_vault(vault, ingredient_aliases=_llm_ingredient_aliases(vault, config))
+    analytics = analyse_vault(vault, ingredient_aliases=_llm_ingredient_aliases(vault, config), config=config)
     if args.json:
         print(
             json.dumps(
@@ -256,9 +280,48 @@ def cmd_normalise_ingredients(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_jobs_ingest(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    job = enqueue_ingest_job(_vault_path(args, config), args.url)
+    print(json.dumps(job_to_dict(job), indent=2))
+    return 0
+
+
+def cmd_jobs_list(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    jobs = [job_to_dict(job) for job in list_jobs(_vault_path(args, config))]
+    print(json.dumps(jobs, indent=2))
+    return 0
+
+
+def cmd_jobs_run(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    processed = run_pending_jobs(
+        _vault_path(args, config),
+        config,
+        workers=args.workers or config.worker_count,
+        limit=args.limit,
+    )
+    print(json.dumps([job_to_dict(job) for job in processed], indent=2))
+    return 0
+
+
+def cmd_worker(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    vault = _vault_path(args, config)
+    workers = args.workers or config.worker_count
+    while True:
+        processed = run_pending_jobs(vault, config, workers=workers, limit=args.limit)
+        for job in processed:
+            print(f"{job.id}: {job.status} {job.title or job.error}")
+        if args.once or args.limit is not None:
+            return 0
+        time.sleep(5)
+
+
 def cmd_shopping_list(args: argparse.Namespace) -> int:
     config = load_config(args.config)
-    recipes = _select_recipes(_vault_path(args, config), args.recipes, args.all)
+    recipes = _select_recipes(_vault_path(args, config), args.recipes, args.all, config)
     items = build_shopping_list([recipe for _path, recipe in recipes])
     output = "Shopping list\n" + "\n".join(f"- {item}" for item in items) + "\n"
     _write_or_print(output, args.output)
@@ -267,7 +330,7 @@ def cmd_shopping_list(args: argparse.Namespace) -> int:
 
 def cmd_export(args: argparse.Namespace) -> int:
     config = load_config(args.config)
-    recipes = _select_recipes(_vault_path(args, config), args.recipes, args.all)
+    recipes = _select_recipes(_vault_path(args, config), args.recipes, args.all, config)
     if args.format == "markdown":
         output = bundle_markdown(recipes)
     elif args.format == "shopping-list":
@@ -284,7 +347,7 @@ def cmd_export(args: argparse.Namespace) -> int:
 
 def cmd_bundle(args: argparse.Namespace) -> int:
     config = load_config(args.config)
-    recipes = _select_recipes(_vault_path(args, config), args.recipes, args.all)
+    recipes = _select_recipes(_vault_path(args, config), args.recipes, args.all, config)
     output = bundle_markdown(recipes)
     _write_or_print(output, args.output)
     return 0
@@ -292,7 +355,7 @@ def cmd_bundle(args: argparse.Namespace) -> int:
 
 def cmd_html(args: argparse.Namespace) -> int:
     config = load_config(args.config)
-    recipes = _select_recipes(_vault_path(args, config), args.recipes, args.all)
+    recipes = _select_recipes(_vault_path(args, config), args.recipes, args.all, config)
     output = html_cookbook(recipes, title=args.title)
     _write_or_print(output, args.output)
     return 0
@@ -321,15 +384,15 @@ def _vault_path(args: argparse.Namespace, config: object) -> str:
     return args.vault or config.default_vault
 
 
-def _select_recipes(vault_path: str, requested: list[str], use_all: bool) -> list[tuple[Path, Recipe]]:
+def _select_recipes(vault_path: str, requested: list[str], use_all: bool, config: object | None = None) -> list[tuple[Path, Recipe]]:
     if use_all:
-        return load_recipes(vault_path)
+        return load_recipes(vault_path, config)  # type: ignore[arg-type]
     if not requested:
         raise ValueError("Pass recipe names or use --all.")
     selected = []
     for item in requested:
         path = find_recipe_file(vault_path, item)
-        selected.append((path, parse_markdown_recipe(path)))
+        selected.append((path, parse_markdown_recipe(path, config=config)))  # type: ignore[arg-type]
     return selected
 
 

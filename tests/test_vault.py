@@ -49,6 +49,32 @@ class VaultTests(unittest.TestCase):
         self.assertNotIn("servings:", markdown)
         self.assertEqual(parsed.yield_amount, "3 jars")
 
+    def test_renders_and_parses_custom_schema_headings_and_frontmatter(self) -> None:
+        config = AutomationConfig(
+            ingredient_heading="You Need",
+            method_heading="You Do",
+            frontmatter_fields=("tags", "source", "servings"),
+        )
+        recipe = Recipe(
+            title="Soup",
+            ingredients=["1 carrot"],
+            steps=["Chop."],
+            tags=["starter", "parev"],
+            categories=["Soups"],
+            source="https://example.com/soup",
+            prep_time="5 mins",
+            servings="2",
+        )
+
+        markdown = render_markdown(recipe, config)
+        parsed = parse_markdown_recipe(Path("Soup.md"), markdown, config)
+
+        self.assertIn("## You Need", markdown)
+        self.assertIn("## You Do", markdown)
+        self.assertNotIn("prep_time:", markdown)
+        self.assertEqual(parsed.ingredients, ["1 carrot"])
+        self.assertEqual(parsed.steps, ["Chop."])
+
     def test_parses_mandatory_marker_as_schema_annotation(self) -> None:
         markdown = """---
 *tags:

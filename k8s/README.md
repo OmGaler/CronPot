@@ -177,6 +177,42 @@ http://127.0.0.1:8080/dashboard
 
 The dashboard reads the same vault and config as the API endpoints. The analytics CronJob also mounts `/config/cronpot.toml`, so scheduled analytics use the same ingredient normalisation settings as the dashboard.
 
+## Smoke Testing
+
+The local smoke helper deploys the local overlay, seeds the PVC, opens a temporary port-forward, and checks `/healthz`, `/readyz`, and `/analytics`:
+
+```cmd
+scripts\k8s-smoke.cmd docs
+```
+
+PowerShell equivalent:
+
+```powershell
+.\scripts\k8s-smoke.ps1 -Source docs
+```
+
+This is intentionally a live-cluster smoke test rather than a unit test. CI still renders every overlay without needing a cluster.
+
+## Background Workers
+
+CronPot has a filesystem-backed ingest queue. Jobs live under `.cronpot/jobs` inside the vault PVC, so the queue survives pod restarts without adding a database yet.
+
+API flow:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8080/jobs/ingest -Method Post -ContentType "application/json" -Body '{"url":"https://example.com/recipe"}'
+Invoke-RestMethod http://127.0.0.1:8080/jobs/run -Method Post
+Invoke-RestMethod http://127.0.0.1:8080/jobs
+```
+
+CLI worker:
+
+```cmd
+cronpot worker --vault docs --once --workers 2
+```
+
+This gives CronPot real parallel worker semantics before introducing Redis, Postgres, or a dedicated worker Deployment.
+
 ## LLM Normalisation In Kubernetes
 
 The base `cronpot.toml` includes an Ollama-oriented `[llm]` section:

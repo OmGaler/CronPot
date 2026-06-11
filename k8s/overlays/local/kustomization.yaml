@@ -17,6 +17,7 @@ configMapGenerator:
       - ../../../cronpot/extraction.py
       - ../../../cronpot/ingest.py
       - ../../../cronpot/importing.py
+      - ../../../cronpot/jobs.py
       - ../../../cronpot/llm.py
       - ../../../cronpot/models.py
       - ../../../cronpot/normalisation.py

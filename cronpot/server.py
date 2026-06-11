@@ -13,6 +13,7 @@ from cronpot.analytics import analyse_vault, build_shopping_list, html_cookbook
 from cronpot.config import AutomationConfig
 from cronpot.extraction import fetch_html
 from cronpot.ingest import prepare_ingested_recipe
+from cronpot.jobs import enqueue_ingest_job, get_job, job_to_dict, list_jobs, run_pending_jobs
 from cronpot.llm import LlmError, suggest_ingredient_alias_map
 from cronpot.models import Recipe
 from cronpot.vault import load_recipes, write_recipe_to_vault
@@ -45,7 +46,11 @@ class CronPotHandler(BaseHTTPRequestHandler):
                 self._send_json({"status": "vault unavailable"}, status=HTTPStatus.SERVICE_UNAVAILABLE)
             return
         if path == "/analytics":
-            analytics = analyse_vault(self.vault_path, ingredient_aliases=_cached_llm_ingredient_aliases(self.vault_path, self.config))
+            analytics = analyse_vault(
+                self.vault_path,
+                ingredient_aliases=_cached_llm_ingredient_aliases(self.vault_path, self.config),
+                config=self.config,
+            )
             self._send_json(
                 {
                     "recipe_count": analytics.recipe_count,
@@ -100,12 +105,28 @@ class CronPotHandler(BaseHTTPRequestHandler):
                 }
             )
             return
+        if path == "/jobs":
+            self._send_json({"jobs": [job_to_dict(job) for job in list_jobs(self.vault_path)]})
+            return
+        if path.startswith("/jobs/"):
+            job_id = unquote(path.removeprefix("/jobs/")).strip()
+            job = get_job(self.vault_path, job_id)
+            if job is None:
+                self._send_json({"error": "job not found"}, status=HTTPStatus.NOT_FOUND)
+                return
+            self._send_json(job_to_dict(job))
+            return
         self._send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:
         request = urlparse(self.path)
         path = request.path.rstrip("/") or "/"
-        if path != "/ingest":
+        if path == "/jobs/run":
+            processed = run_pending_jobs(self.vault_path, self.config, workers=self.config.worker_count)
+            self._send_json({"jobs": [job_to_dict(job) for job in processed]})
+            return
+
+        if path not in {"/ingest", "/jobs/ingest"}:
             self._send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
             return
 
@@ -114,13 +135,17 @@ class CronPotHandler(BaseHTTPRequestHandler):
         if not url:
             self._send_json({"error": "url is required"}, status=HTTPStatus.BAD_REQUEST)
             return
+        if path == "/jobs/ingest" or _truthy(str(payload.get("background") or "")):
+            job = enqueue_ingest_job(self.vault_path, url)
+            self._send_json(job_to_dict(job), status=HTTPStatus.ACCEPTED)
+            return
 
         try:
             recipe = prepare_ingested_recipe(fetch_html(url), url, self.vault_path, self.config)
             if not recipe.has_core_content():
                 self._send_json({"error": "extraction incomplete"}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
                 return
-            target = write_recipe_to_vault(recipe, self.vault_path)
+            target = write_recipe_to_vault(recipe, self.vault_path, config=self.config)
         except LlmError as exc:
             self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_GATEWAY)
             return
@@ -163,7 +188,7 @@ class CronPotHandler(BaseHTTPRequestHandler):
         return "text/html" in accept.casefold()
 
     def _filtered_recipes(self, query: dict[str, list[str]]) -> list[tuple[Path, Recipe]]:
-        recipes = load_recipes(self.vault_path)
+        recipes = load_recipes(self.vault_path, self.config)
         tags = {value.casefold() for value in _query_values(query, "tag")}
         categories = {value.casefold() for value in _query_values(query, "category")}
 
@@ -183,7 +208,7 @@ class CronPotHandler(BaseHTTPRequestHandler):
 
     def _selected_recipes(self, query: dict[str, list[str]]) -> list[tuple[str, tuple[Path, Recipe] | None]] | None:
         if _truthy(query.get("all", [""])[0]):
-            return [("", match) for match in load_recipes(self.vault_path)]
+            return [("", match) for match in load_recipes(self.vault_path, self.config)]
 
         names = _query_values(query, "recipe")
         names.extend(_query_values(query, "recipes"))
@@ -196,7 +221,7 @@ class CronPotHandler(BaseHTTPRequestHandler):
         if not requested or "/" in name or "\\" in name:
             return None
 
-        for recipe_path, recipe in load_recipes(self.vault_path):
+        for recipe_path, recipe in load_recipes(self.vault_path, self.config):
             keys = {
                 recipe_path.name.casefold(),
                 recipe_path.stem.casefold(),
@@ -247,8 +272,8 @@ def _recipe_page_html(recipe_path: Path, recipe: Recipe) -> str:
 
 
 def _dashboard_html(vault_path: Path, config: AutomationConfig) -> str:
-    analytics = analyse_vault(vault_path, ingredient_aliases=_cached_llm_ingredient_aliases(vault_path, config))
-    recipes = load_recipes(vault_path)
+    analytics = analyse_vault(vault_path, ingredient_aliases=_cached_llm_ingredient_aliases(vault_path, config), config=config)
+    recipes = load_recipes(vault_path, config)
     recipe_rows = "\n".join(_dashboard_recipe_row(path, recipe) for path, recipe in recipes[:20])
     recipe_table_body = recipe_rows or '<tr><td colspan="4">No recipes found.</td></tr>'
     missing_source = analytics.recipes_missing_source

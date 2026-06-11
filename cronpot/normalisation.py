@@ -101,13 +101,24 @@ CATEGORY_RULES: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
 
 
 DIETARY_TAGS = ("parev", "milky", "meaty")
+UNICODE_FRACTIONS: tuple[tuple[str, str], ...] = (
+    ("1/8", "⅛"),
+    ("1/4", "¼"),
+    ("1/3", "⅓"),
+    ("3/8", "⅜"),
+    ("1/2", "½"),
+    ("5/8", "⅝"),
+    ("2/3", "⅔"),
+    ("3/4", "¾"),
+    ("7/8", "⅞"),
+)
 
 
 def normalise_recipe(recipe: Recipe, config: AutomationConfig | None = None) -> Recipe:
     config = config or AutomationConfig()
-    title = normalise_text(recipe.title)
-    ingredients = [normalise_text(item) for item in recipe.ingredients if normalise_text(item)]
-    steps = [normalise_text(step) for step in recipe.steps if normalise_text(step)]
+    title = normalise_text(recipe.title, config)
+    ingredients = [normalise_text(item, config) for item in recipe.ingredients if normalise_text(item, config)]
+    steps = [normalise_text(step, config) for step in recipe.steps if normalise_text(step, config)]
     searchable = " ".join([title, *ingredients, *steps]).casefold()
 
     categories = unique_labels_preserving_order([*recipe.categories, *infer_categories(searchable)])
@@ -119,23 +130,27 @@ def normalise_recipe(recipe: Recipe, config: AutomationConfig | None = None) -> 
         title=title,
         ingredients=ingredients,
         steps=steps,
-        prep_time=normalise_text(recipe.prep_time),
-        cook_time=normalise_text(recipe.cook_time),
-        total_time=normalise_text(recipe.total_time),
-        servings=normalise_text(recipe.servings),
-        yield_amount=normalise_text(recipe.yield_amount),
+        prep_time=normalise_text(recipe.prep_time, config),
+        cook_time=normalise_text(recipe.cook_time, config),
+        total_time=normalise_text(recipe.total_time, config),
+        servings=normalise_text(recipe.servings, config),
+        yield_amount=normalise_text(recipe.yield_amount, config),
         tags=tags,
         categories=categories or ["Mains"],
     )
 
 
-def normalise_text(value: str) -> str:
+def normalise_text(value: str, config: AutomationConfig | None = None) -> str:
+    config = config or AutomationConfig()
     text = str(value or "")
     text = text.replace("\xa0", " ")
     text = text.replace("\u201c", '"').replace("\u201d", '"').replace("\u2019", "'")
     text = re.sub(r"\s+", " ", text).strip()
-    for source, replacement in TERM_REPLACEMENTS:
-        text = _replace_word(text, source, replacement)
+    if config.english == "british":
+        for source, replacement in TERM_REPLACEMENTS:
+            text = _replace_word(text, source, replacement)
+    if config.fraction_style == "unicode":
+        text = _normalise_unicode_fractions(text)
     return text
 
 
@@ -222,3 +237,10 @@ def _match_case(original: str, replacement: str) -> str:
 
 def _contains_word_or_phrase(text: str, phrase: str) -> bool:
     return re.search(rf"\b{re.escape(phrase.casefold())}\b", text) is not None
+
+
+def _normalise_unicode_fractions(text: str) -> str:
+    for source, replacement in UNICODE_FRACTIONS:
+        text = re.sub(rf"(\d+)\s+{re.escape(source)}(?![\d/])", rf"\1{replacement}", text)
+        text = re.sub(rf"(?<![\d/]){re.escape(source)}(?![\d/])", replacement, text)
+    return text

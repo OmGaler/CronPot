@@ -44,18 +44,18 @@ def import_markdown_vault(
     result = ImportResult()
 
     for markdown_path in _markdown_paths(source, recursive=recursive):
-        recipe = parse_markdown_recipe(markdown_path)
+        recipe = parse_markdown_recipe(markdown_path, config=config)
         if not allow_incomplete and not recipe.has_core_content():
             result.skipped.append(ImportSkip(markdown_path, "missing ingredients or method steps"))
             continue
 
         imported = _prepare_imported_recipe(recipe, source, markdown_path, config)
         if dry_run:
-            result.previews.append(ImportPreview(markdown_path, render_markdown(imported)))
+            result.previews.append(ImportPreview(markdown_path, render_markdown(imported, config)))
             continue
 
         try:
-            result.imported.append(write_recipe_to_vault(imported, target, overwrite=overwrite))
+            result.imported.append(write_recipe_to_vault(imported, target, overwrite=overwrite, config=config))
         except FileExistsError as exc:
             result.skipped.append(ImportSkip(markdown_path, str(exc)))
 

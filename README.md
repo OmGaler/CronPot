@@ -62,6 +62,8 @@ cronpot ingest "https://example.com/recipe" --vault docs --title "Friday Night S
 cronpot import-vault "C:\path\to\ObsidianVault" --vault docs
 cronpot analytics --vault docs
 cronpot normalise ingredients --vault docs --suggest
+cronpot jobs ingest "https://example.com/recipe" --vault docs
+cronpot worker --vault docs --once --workers 2
 cronpot export "Aglio e Olio" --vault docs
 cronpot export --all --vault docs --output cookbook.html
 cronpot export --all --vault docs --format pdf --output cookbook.pdf
@@ -111,6 +113,16 @@ Write endpoint:
 Invoke-RestMethod http://127.0.0.1:8080/ingest -Method Post -ContentType "application/json" -Body '{"url":"https://example.com/recipe"}'
 ```
 
+Background ingest endpoints:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8080/jobs/ingest -Method Post -ContentType "application/json" -Body '{"url":"https://example.com/recipe"}'
+Invoke-RestMethod http://127.0.0.1:8080/jobs
+Invoke-RestMethod http://127.0.0.1:8080/jobs/run -Method Post
+```
+
+Queued jobs are stored as JSON under `.cronpot/jobs` inside the vault. This gives CronPot durable background processing without requiring Postgres or Redis yet.
+
 ## Config
 
 Copy `cronpot.example.toml` to `cronpot.toml` when you want project-specific settings. `cronpot.toml` is ignored because local config can contain machine-specific paths later.
@@ -119,6 +131,19 @@ Copy `cronpot.example.toml` to `cronpot.toml` when you want project-specific set
 [recipe]
 default_vault = "docs"
 require_dietary_tag = true
+
+[schema]
+ingredient_heading = "Ingredients"
+method_heading = "Method"
+frontmatter_fields = ["tags", "source", "source_hash", "prep_time", "cook_time", "total_time", "servings", "yield"]
+
+[style]
+english = "british"
+fraction_style = "unicode"
+method_style = "imperative"
+
+[worker]
+count = 2
 
 [llm]
 provider = "ollama"
@@ -130,6 +155,12 @@ ingredient_limit = 120
 ```
 
 Set `require_dietary_tag = false` only if you intentionally want to allow recipes without exactly one of `parev`, `milky`, or `meaty`.
+
+`[schema]` controls the Markdown shape CronPot writes and reads. The default keeps `## Ingredients` and `## Method`, but vaults can rename those headings and choose which frontmatter fields are emitted.
+
+`[style]` controls deterministic text conventions and LLM rewrite instructions. The default is British English with Unicode fractions, so `1/2 tsp` becomes `½ tsp` and `1 1/4 cups` becomes `1¼ cups`.
+
+`[worker]` controls default parallelism for background ingest workers.
 
 For local LLM suggestions, install Ollama, start it, and pull the configured model:
 
@@ -210,6 +241,12 @@ scripts\k8s-seed-vault.cmd docs cronpot-local /clear
 
 Current local prerequisites: Docker Desktop must be running, and a Kubernetes context must be configured. `kubectl` is available on this machine; Helm is not required.
 
+Run a live local Kubernetes smoke check with:
+
+```cmd
+scripts\k8s-smoke.cmd docs
+```
+
 ## CI/CD
 
 `.github/workflows/ci-cd.yml` compiles Python modules, runs unit tests, renders all Kubernetes overlays, builds a Docker image, publishes it to GHCR on non-PR runs, and deploys when the matching kubeconfig secret is configured.
@@ -230,6 +267,6 @@ python -m unittest discover -s tests
 
 ## Remaining Decisions
 
-- Which LLM provider should power optional messy-page extraction and advanced normalisation, if any.
+
 - Whether to migrate existing recipes to the current schema in one batch.
 - Whether to add Helm once the raw Kubernetes manifests stabilise.

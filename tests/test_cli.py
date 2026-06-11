@@ -245,7 +245,7 @@ class CliTests(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory() as temp_dir:
             vault = Path(temp_dir)
-            with patch("cronpot.cli.fetch_html", return_value=html), redirect_stdout(StringIO()):
+            with patch("cronpot.cli.load_config", return_value=AutomationConfig()), patch("cronpot.cli.fetch_html", return_value=html), redirect_stdout(StringIO()):
                 exit_code = main(["ingest", "https://example.com/soup", "--vault", str(vault), "--title", "Carrot Soup"])
 
             self.assertEqual(exit_code, 0)

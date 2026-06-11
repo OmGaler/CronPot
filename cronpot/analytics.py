@@ -10,6 +10,7 @@ from html import escape
 from pathlib import Path
 
 from cronpot.models import Recipe
+from cronpot.config import AutomationConfig
 from cronpot.normalisation import normalise_text
 from cronpot.vault import load_recipes
 
@@ -44,8 +45,12 @@ INGREDIENT_ALIASES: dict[str, str] = {
 }
 
 
-def analyse_vault(vault_path: Path | str, ingredient_aliases: dict[str, str] | None = None) -> CookbookAnalytics:
-    recipes = [recipe for _path, recipe in load_recipes(vault_path)]
+def analyse_vault(
+    vault_path: Path | str,
+    ingredient_aliases: dict[str, str] | None = None,
+    config: AutomationConfig | None = None,
+) -> CookbookAnalytics:
+    recipes = [recipe for _path, recipe in load_recipes(vault_path, config)]
     tag_counts: Counter[str] = Counter()
     category_counts: Counter[str] = Counter()
     ingredient_counts: Counter[str] = Counter()

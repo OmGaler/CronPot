@@ -2,6 +2,19 @@
 default_vault = "docs"
 require_dietary_tag = true
 
+[schema]
+ingredient_heading = "Ingredients"
+method_heading = "Method"
+frontmatter_fields = ["tags", "source", "source_hash", "prep_time", "cook_time", "total_time", "servings", "yield"]
+
+[style]
+english = "british"
+fraction_style = "unicode"
+method_style = "imperative"
+
+[worker]
+count = 2
+
 [llm]
 provider = "ollama"
 base_url = "http://127.0.0.1:11434"
