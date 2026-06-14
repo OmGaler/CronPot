@@ -12,7 +12,7 @@ from cronpot.config import load_config
 from cronpot.extraction import fetch_html
 from cronpot.ingest import prepare_ingested_recipe
 from cronpot.importing import import_markdown_vault
-from cronpot.jobs import enqueue_ingest_job, job_to_dict, list_jobs, run_pending_jobs
+from cronpot.jobs import enqueue_ingest_job, job_to_dict, list_jobs, retry_job, run_pending_jobs
 from cronpot.llm import LlmError, suggest_ingredient_alias_map, suggest_ingredient_aliases
 from cronpot.models import Recipe
 from cronpot.server import run_server
@@ -88,6 +88,10 @@ def build_parser() -> argparse.ArgumentParser:
     jobs_run.add_argument("--workers", type=int, default=None, help="Number of parallel workers.")
     jobs_run.add_argument("--limit", type=int, default=None, help="Maximum jobs to process.")
     jobs_run.set_defaults(func=cmd_jobs_run)
+    jobs_retry = jobs_subparsers.add_parser("retry", help="Retry a failed or stale ingest job.")
+    jobs_retry.add_argument("job_id")
+    jobs_retry.add_argument("--vault", default=None)
+    jobs_retry.set_defaults(func=cmd_jobs_retry)
 
     worker = subparsers.add_parser("worker", parents=[config_parent], help="Process queued background jobs.")
     worker.add_argument("--vault", default=None)
@@ -303,6 +307,13 @@ def cmd_jobs_run(args: argparse.Namespace) -> int:
         limit=args.limit,
     )
     print(json.dumps([job_to_dict(job) for job in processed], indent=2))
+    return 0
+
+
+def cmd_jobs_retry(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    job = retry_job(_vault_path(args, config), args.job_id)
+    print(json.dumps(job_to_dict(job), indent=2))
     return 0
 
 

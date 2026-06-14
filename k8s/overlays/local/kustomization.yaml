@@ -31,5 +31,6 @@ images:
 
 patches:
   - path: deployment-patch.yaml
+  - path: worker-deployment-patch.yaml
   - path: analytics-cronjob-patch.yaml
   - path: service-patch.yaml

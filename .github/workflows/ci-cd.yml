@@ -89,8 +89,10 @@ jobs:
         if: env.KUBE_CONFIG != ''
         run: |
           kubectl -n "$NAMESPACE" set image deployment/cronpot-api api="$IMAGE:${{ github.sha }}"
+          kubectl -n "$NAMESPACE" set image deployment/cronpot-worker worker="$IMAGE:${{ github.sha }}"
           kubectl -n "$NAMESPACE" set image cronjob/cronpot-analytics analytics="$IMAGE:${{ github.sha }}"
           kubectl -n "$NAMESPACE" rollout status deployment/cronpot-api --timeout=180s
+          kubectl -n "$NAMESPACE" rollout status deployment/cronpot-worker --timeout=180s
 
   deploy-staging:
     runs-on: ubuntu-latest
@@ -124,8 +126,10 @@ jobs:
         if: env.KUBE_CONFIG != ''
         run: |
           kubectl -n "$NAMESPACE" set image deployment/cronpot-api api="$IMAGE:${{ github.sha }}"
+          kubectl -n "$NAMESPACE" set image deployment/cronpot-worker worker="$IMAGE:${{ github.sha }}"
           kubectl -n "$NAMESPACE" set image cronjob/cronpot-analytics analytics="$IMAGE:${{ github.sha }}"
           kubectl -n "$NAMESPACE" rollout status deployment/cronpot-api --timeout=180s
+          kubectl -n "$NAMESPACE" rollout status deployment/cronpot-worker --timeout=180s
 
   deploy-production:
     runs-on: ubuntu-latest
@@ -159,5 +163,7 @@ jobs:
         if: env.KUBE_CONFIG != ''
         run: |
           kubectl -n "$NAMESPACE" set image deployment/cronpot-api api="$IMAGE:${{ github.sha }}"
+          kubectl -n "$NAMESPACE" set image deployment/cronpot-worker worker="$IMAGE:${{ github.sha }}"
           kubectl -n "$NAMESPACE" set image cronjob/cronpot-analytics analytics="$IMAGE:${{ github.sha }}"
           kubectl -n "$NAMESPACE" rollout status deployment/cronpot-api --timeout=180s
+          kubectl -n "$NAMESPACE" rollout status deployment/cronpot-worker --timeout=180s

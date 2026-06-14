@@ -17,6 +17,7 @@ The base includes:
 - ConfigMap
 - PersistentVolumeClaim for the vault
 - API Deployment
+- worker Deployment
 - ClusterIP Service
 - analytics CronJob
 - NetworkPolicy
@@ -26,10 +27,10 @@ The base includes:
 | Kubernetes piece | CronPot role | What it teaches |
 | --- | --- | --- |
 | Namespace | Separates `local`, `dev`, `staging`, and `production` installs | Environment boundaries and safe namespacing |
-| ServiceAccount | Runs the API and analytics worker as a named workload identity | Least-privilege workload identity, even before RBAC grows |
+| ServiceAccount | Runs the API, ingest worker, and analytics worker as a named workload identity | Least-privilege workload identity, even before RBAC grows |
 | ConfigMap | Mounts `cronpot.toml` into `/config` | Runtime configuration separate from the container image |
 | PersistentVolumeClaim | Stores the recipe vault at `/vault` | Stateful application data and why storage affects scaling |
-| Deployment | Runs the HTTP API and dashboard | Long-running workloads, probes, resources, and security context |
+| Deployment | Runs the HTTP API/dashboard and the background ingest worker | Long-running workloads, probes, resources, and security context |
 | Service | Gives the API a stable in-cluster address | Service discovery independent of individual pods |
 | CronJob | Runs scheduled analytics with the same vault and config | Batch workloads sharing state and configuration with the API |
 | NetworkPolicy | Allows HTTP ingress to the API pods | Pod traffic boundaries and how policy becomes explicit |
@@ -65,7 +66,7 @@ The shortest local loop is:
 scripts\k8s-start.cmd docs
 ```
 
-It applies the local overlay, waits for the API Deployment, seeds `/vault` from `docs`, prints the dashboard URL, and starts a blocking port-forward to `http://127.0.0.1:8080/dashboard`. Press `Ctrl+C` to stop port-forwarding.
+It applies the local overlay, waits for the API and worker Deployments, seeds `/vault` from `docs`, prints the dashboard URL, and starts a blocking port-forward to `http://127.0.0.1:8080/dashboard`. Press `Ctrl+C` to stop port-forwarding.
 
 PowerShell equivalent:
 
@@ -99,7 +100,7 @@ scripts\k8s-deploy.cmd local
 scripts\k8s-port-forward.cmd cronpot-local
 ```
 
-The local deploy helper restarts the API Deployment after applying manifests so updated source files mounted from the ConfigMap are loaded by Python.
+The local deploy helper restarts the API and worker Deployments after applying manifests so updated source files mounted from the ConfigMap are loaded by Python.
 
 The Docker image build is still useful for production and for learning the container path:
 
@@ -211,7 +212,9 @@ CLI worker:
 cronpot worker --vault docs --once --workers 2
 ```
 
-This gives CronPot real parallel worker semantics before introducing Redis, Postgres, or a dedicated worker Deployment.
+In Kubernetes, `cronpot-worker` runs the same command as a long-lived Deployment and processes the JSON queue stored on the vault PVC. This keeps the API responsive while URL ingestion, deterministic normalisation, and optional LLM rewriting happen in the background.
+
+Keep the worker Deployment at one replica while the queue is file-backed on a PVC. The CLI `--workers` setting still gives parallelism inside that pod, but multiple pods would need cross-pod locking or an external queue before they are safe to scale.
 
 ## LLM Normalisation In Kubernetes
 
@@ -289,7 +292,7 @@ scripts\k8s-render.cmd staging
 scripts\k8s-render.cmd production
 ```
 
-GitHub Actions builds and pushes an image to GHCR, applies the selected overlay, then updates the Deployment and CronJob images to the pushed SHA tag.
+GitHub Actions builds and pushes an image to GHCR, applies the selected overlay, then updates the API Deployment, worker Deployment, and CronJob images to the pushed SHA tag.
 
 Repository secrets:
 

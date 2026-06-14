@@ -9,5 +9,7 @@ kubectl kustomize --load-restrictor=LoadRestrictionsNone "k8s/overlays/$Overlay"
 
 if ($Overlay -eq "local") {
     kubectl -n cronpot-local rollout restart deployment/cronpot-api
+    kubectl -n cronpot-local rollout restart deployment/cronpot-worker
     kubectl -n cronpot-local rollout status deployment/cronpot-api --timeout=180s
+    kubectl -n cronpot-local rollout status deployment/cronpot-worker --timeout=180s
 }

@@ -13,7 +13,7 @@ from cronpot.analytics import analyse_vault, build_shopping_list, html_cookbook
 from cronpot.config import AutomationConfig
 from cronpot.extraction import fetch_html
 from cronpot.ingest import prepare_ingested_recipe
-from cronpot.jobs import enqueue_ingest_job, get_job, job_to_dict, list_jobs, run_pending_jobs
+from cronpot.jobs import enqueue_ingest_job, get_job, job_to_dict, list_jobs, retry_job, run_pending_jobs
 from cronpot.llm import LlmError, suggest_ingredient_alias_map
 from cronpot.models import Recipe
 from cronpot.vault import load_recipes, write_recipe_to_vault
@@ -124,6 +124,15 @@ class CronPotHandler(BaseHTTPRequestHandler):
         if path == "/jobs/run":
             processed = run_pending_jobs(self.vault_path, self.config, workers=self.config.worker_count)
             self._send_json({"jobs": [job_to_dict(job) for job in processed]})
+            return
+        if path.startswith("/jobs/") and path.endswith("/retry"):
+            job_id = unquote(path.removeprefix("/jobs/").removesuffix("/retry")).strip()
+            try:
+                job = retry_job(self.vault_path, job_id)
+            except FileNotFoundError:
+                self._send_json({"error": "job not found"}, status=HTTPStatus.NOT_FOUND)
+                return
+            self._send_json(job_to_dict(job))
             return
 
         if path not in {"/ingest", "/jobs/ingest"}:
@@ -274,10 +283,13 @@ def _recipe_page_html(recipe_path: Path, recipe: Recipe) -> str:
 def _dashboard_html(vault_path: Path, config: AutomationConfig) -> str:
     analytics = analyse_vault(vault_path, ingredient_aliases=_cached_llm_ingredient_aliases(vault_path, config), config=config)
     recipes = load_recipes(vault_path, config)
+    jobs = list_jobs(vault_path)
+    recent_jobs = sorted(jobs, key=lambda job: job.updated_at, reverse=True)[:10]
     recipe_rows = "\n".join(_dashboard_recipe_row(path, recipe) for path, recipe in recipes[:20])
     recipe_table_body = recipe_rows or '<tr><td colspan="4">No recipes found.</td></tr>'
     missing_source = analytics.recipes_missing_source
     sourced_count = max(analytics.recipe_count - missing_source, 0)
+    open_jobs = sum(1 for job in jobs if job.status in {"pending", "running"})
 
     return "\n".join(
         [
@@ -299,7 +311,7 @@ def _dashboard_html(vault_path: Path, config: AutomationConfig) -> str:
             "    a { color: var(--accent); text-decoration: none; }",
             "    .muted { color: var(--muted); }",
             "    .status { color: var(--accent); font-weight: 700; white-space: nowrap; }",
-            "    .metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; margin: 28px 0; }",
+            "    .metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 18px; margin: 28px 0; }",
             "    .metric { border-bottom: 2px solid var(--line); padding-bottom: 14px; }",
             "    .metric strong { display: block; font-size: 34px; line-height: 1; margin-bottom: 8px; }",
             "    .workspace { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 30px; align-items: start; }",
@@ -332,8 +344,10 @@ def _dashboard_html(vault_path: Path, config: AutomationConfig) -> str:
             f"      {_metric('Recipes', analytics.recipe_count)}",
             f"      {_metric('With source', sourced_count)}",
             f"      {_metric('Missing source', missing_source)}",
+            f"      {_metric('Open jobs', open_jobs)}",
             "    </section>",
             "    <div class=\"workspace\">",
+            "      <div>",
             "      <section class=\"section\">",
             "        <h2>Recipes</h2>",
             "        <table>",
@@ -341,6 +355,8 @@ def _dashboard_html(vault_path: Path, config: AutomationConfig) -> str:
             f"          <tbody>{recipe_table_body}</tbody>",
             "        </table>",
             "      </section>",
+            f"      {_dashboard_jobs(recent_jobs)}",
+            "      </div>",
             "      <aside>",
             f"        {_dashboard_bars('Top tags', analytics.tag_counts.most_common(8))}",
             f"        {_dashboard_bars('Top categories', analytics.category_counts.most_common(8))}",
@@ -403,6 +419,37 @@ def _dashboard_recipe_row(path: Path, recipe: Recipe) -> str:
         f"<td>{escape(content)}</td>"
         "</tr>"
     )
+
+
+def _dashboard_jobs(jobs: list[object]) -> str:
+    if not jobs:
+        body = '<p class="muted">No queued jobs.</p>'
+    else:
+        rows: list[str] = []
+        for job in sorted(jobs, key=lambda item: getattr(item, "updated_at", 0), reverse=True):
+            status = escape(getattr(job, "status", ""))
+            title = getattr(job, "title", "") or getattr(job, "url", "")
+            path = getattr(job, "path", "")
+            error = getattr(job, "error", "")
+            detail = error or title
+            if path and title:
+                detail = f'<a href="/recipes/{quote(Path(path).stem)}">{escape(title)}</a>'
+            else:
+                detail = escape(detail)
+            rows.append(
+                "<tr>"
+                f"<td>{status}</td>"
+                f"<td>{detail}</td>"
+                f"<td>{getattr(job, 'attempts', 0)}</td>"
+                "</tr>"
+            )
+        body = (
+            "<table>"
+            "<thead><tr><th>Status</th><th>Job</th><th>Attempts</th></tr></thead>"
+            f"<tbody>{''.join(rows)}</tbody>"
+            "</table>"
+        )
+    return f'<section class="section"><h2>Ingest jobs</h2>{body}</section>'
 
 
 def _query_values(query: dict[str, list[str]], key: str) -> list[str]:

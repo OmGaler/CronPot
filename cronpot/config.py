@@ -28,6 +28,8 @@ class AutomationConfig:
     fraction_style: str = "unicode"
     method_style: str = "imperative"
     worker_count: int = 2
+    worker_max_attempts: int = 3
+    worker_stale_after_seconds: int = 900
     llm_provider: str = "ollama"
     llm_base_url: str = "http://127.0.0.1:11434"
     llm_model: str = "gemma4:latest"
@@ -73,6 +75,8 @@ def load_config(path: str | Path | None = None) -> AutomationConfig:
         fraction_style=str(style_config.get("fraction_style") or "unicode").casefold(),
         method_style=str(style_config.get("method_style") or "imperative").casefold(),
         worker_count=max(int(worker_config.get("count") or 2), 1),
+        worker_max_attempts=max(int(worker_config.get("max_attempts") or 3), 1),
+        worker_stale_after_seconds=max(int(worker_config.get("stale_after_seconds") or 900), 30),
         llm_provider=str(llm_config.get("provider") or "ollama"),
         llm_base_url=str(llm_config.get("base_url") or "http://127.0.0.1:11434").rstrip("/"),
         llm_model=str(llm_config.get("model") or "gemma4:latest"),

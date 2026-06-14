@@ -45,6 +45,12 @@ class NormalisationTests(unittest.TestCase):
 
         self.assertEqual(normalise_text("Broil 1/2 cup scallions.", config), "Broil 1/2 cup scallions.")
 
+    def test_can_convert_ascii_and_unicode_fractions_to_decimals(self) -> None:
+        config = AutomationConfig(english="source", fraction_style="decimal")
+
+        self.assertEqual(normalise_text("Add 1/2 tsp salt and 1 1/4 cups water.", config), "Add 0.5 tsp salt and 1.25 cups water.")
+        self.assertEqual(normalise_text("Add ½ tsp salt and 1¼ cups water.", config), "Add 0.5 tsp salt and 1.25 cups water.")
+
 
 if __name__ == "__main__":
     unittest.main()

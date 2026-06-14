@@ -12,6 +12,7 @@ resources:
   - configmap.yaml
   - pvc.yaml
   - deployment.yaml
+  - worker-deployment.yaml
   - service.yaml
   - analytics-cronjob.yaml
   - network-policy.yaml

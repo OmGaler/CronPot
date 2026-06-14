@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cronpot-worker
+spec:
+  template:
+    spec:
+      containers:
+        - name: worker
+          imagePullPolicy: IfNotPresent
+          workingDir: /app
+          command:
+            - python
+            - -m
+            - cronpot
+            - worker
+            - --vault
+            - /vault
+            - --config
+            - /config/cronpot.toml
+          env:
+            - name: PYTHONPATH
+              value: /app
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
+            - name: PYTHONUNBUFFERED
+              value: "1"
+          volumeMounts:
+            - name: source
+              mountPath: /app/cronpot
+              readOnly: true
+      volumes:
+        - name: source
+          configMap:
+            name: cronpot-source

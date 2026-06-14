@@ -57,6 +57,7 @@ def get_job(vault_path: Path | str, job_id: str) -> IngestJob | None:
 
 
 def run_pending_jobs(vault_path: Path | str, config: AutomationConfig, workers: int = 1, limit: int | None = None) -> list[IngestJob]:
+    reset_stale_jobs(vault_path, stale_after_seconds=config.worker_stale_after_seconds)
     pending = [job for job in list_jobs(vault_path) if job.status == "pending"]
     if limit is not None:
         pending = pending[:limit]
@@ -79,6 +80,12 @@ def process_job(vault_path: Path | str, job_id: str, config: AutomationConfig) -
         if job is None:
             raise FileNotFoundError(f"No job found for {job_id}")
         if job.status != "pending":
+            return job
+        if job.attempts >= config.worker_max_attempts:
+            job.status = "failed"
+            job.error = f"maximum attempts reached ({config.worker_max_attempts})"
+            job.updated_at = time.time()
+            _write_job(directory, job)
             return job
         job.status = "running"
         job.attempts += 1
@@ -104,6 +111,34 @@ def process_job(vault_path: Path | str, job_id: str, config: AutomationConfig) -
     job.updated_at = time.time()
     _write_job(directory, job)
     return job
+
+
+def retry_job(vault_path: Path | str, job_id: str) -> IngestJob:
+    directory = _job_dir(vault_path)
+    job = _read_job(directory / f"{job_id}.json")
+    if job is None:
+        raise FileNotFoundError(f"No job found for {job_id}")
+    if job.status not in {"failed", "running"}:
+        return job
+    job.status = "pending"
+    job.error = ""
+    job.updated_at = time.time()
+    _write_job(directory, job)
+    return job
+
+
+def reset_stale_jobs(vault_path: Path | str, stale_after_seconds: int = 900) -> list[IngestJob]:
+    now = time.time()
+    reset: list[IngestJob] = []
+    directory = _job_dir(vault_path)
+    for job in list_jobs(vault_path):
+        if job.status == "running" and now - job.updated_at > stale_after_seconds:
+            job.status = "pending"
+            job.error = "reset after stale running state"
+            job.updated_at = now
+            _write_job(directory, job)
+            reset.append(job)
+    return reset
 
 
 def job_to_dict(job: IngestJob) -> dict[str, Any]:

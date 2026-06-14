@@ -110,7 +110,7 @@ def write_recipe_to_vault(recipe: Recipe, vault_path: Path | str, overwrite: boo
     vault = Path(vault_path)
     vault.mkdir(parents=True, exist_ok=True)
     recipe_hash = recipe.source_hash or source_hash(recipe.source)
-    target = find_existing_by_source(vault, recipe.source, recipe_hash)
+    target = find_existing_by_source(vault, recipe.source, recipe_hash, config)
 
     if target is None:
         target = _available_recipe_path(vault, recipe.title, recipe_hash)
@@ -122,10 +122,10 @@ def write_recipe_to_vault(recipe: Recipe, vault_path: Path | str, overwrite: boo
     return target
 
 
-def find_existing_by_source(vault: Path, source: str, recipe_hash: str) -> Path | None:
+def find_existing_by_source(vault: Path, source: str, recipe_hash: str, config: AutomationConfig | None = None) -> Path | None:
     if not source and not recipe_hash:
         return None
-    for path, recipe in load_recipes(vault):
+    for path, recipe in load_recipes(vault, config):
         if recipe_hash and recipe.source_hash == recipe_hash:
             return path
         if source and recipe.source == source:
@@ -158,7 +158,7 @@ def validate_vault(vault_path: Path | str, config: AutomationConfig | None = Non
     issues: list[ValidationIssue] = []
     seen_sources: dict[str, Path] = {}
 
-    for path, recipe in load_recipes(vault_path):
+    for path, recipe in load_recipes(vault_path, config):
         if not recipe.tags:
             issues.append(ValidationIssue(path, "missing tags"))
         elif config.require_dietary_tag:

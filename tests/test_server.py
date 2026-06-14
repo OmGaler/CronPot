@@ -69,6 +69,7 @@ class ServerTests(unittest.TestCase):
         self.assertIn("Service online", text)
         self.assertIn("Aglio e Olio", text)
         self.assertIn("Top ingredients", text)
+        self.assertIn("Ingest jobs", text)
         self.assertIn('class="fill" style="width:', text)
         self.assertIn("background: #", text)
 
@@ -176,6 +177,16 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(run["jobs"][0]["status"], "complete")
         detail = self.get_json(f"/jobs/{queued['id']}")
         self.assertEqual(detail["title"], "Queued Soup")
+
+    def test_retry_job_endpoint_sets_failed_job_pending(self) -> None:
+        queued = self.post_json("/jobs/ingest", {"url": "https://example.com/failing"})
+        with patch("cronpot.jobs.fetch_html", side_effect=OSError("network down")):
+            self.post_json("/jobs/run", {})
+
+        retried = self.post_json(f"/jobs/{queued['id']}/retry", {})
+
+        self.assertEqual(retried["status"], "pending")
+        self.assertEqual(retried["error"], "")
 
     def get_json(self, path: str) -> dict[str, object]:
         with urlopen(f"{self.base_url}{path}", timeout=5) as response:

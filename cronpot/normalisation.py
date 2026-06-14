@@ -101,16 +101,16 @@ CATEGORY_RULES: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
 
 
 DIETARY_TAGS = ("parev", "milky", "meaty")
-UNICODE_FRACTIONS: tuple[tuple[str, str], ...] = (
-    ("1/8", "⅛"),
-    ("1/4", "¼"),
-    ("1/3", "⅓"),
-    ("3/8", "⅜"),
-    ("1/2", "½"),
-    ("5/8", "⅝"),
-    ("2/3", "⅔"),
-    ("3/4", "¾"),
-    ("7/8", "⅞"),
+FRACTIONS: tuple[tuple[str, str, int, int], ...] = (
+    ("1/8", "⅛", 1, 8),
+    ("1/4", "¼", 1, 4),
+    ("1/3", "⅓", 1, 3),
+    ("3/8", "⅜", 3, 8),
+    ("1/2", "½", 1, 2),
+    ("5/8", "⅝", 5, 8),
+    ("2/3", "⅔", 2, 3),
+    ("3/4", "¾", 3, 4),
+    ("7/8", "⅞", 7, 8),
 )
 
 
@@ -151,6 +151,8 @@ def normalise_text(value: str, config: AutomationConfig | None = None) -> str:
             text = _replace_word(text, source, replacement)
     if config.fraction_style == "unicode":
         text = _normalise_unicode_fractions(text)
+    elif config.fraction_style == "decimal":
+        text = _normalise_decimal_fractions(text)
     return text
 
 
@@ -240,7 +242,37 @@ def _contains_word_or_phrase(text: str, phrase: str) -> bool:
 
 
 def _normalise_unicode_fractions(text: str) -> str:
-    for source, replacement in UNICODE_FRACTIONS:
+    for source, replacement, _numerator, _denominator in FRACTIONS:
         text = re.sub(rf"(\d+)\s+{re.escape(source)}(?![\d/])", rf"\1{replacement}", text)
         text = re.sub(rf"(?<![\d/]){re.escape(source)}(?![\d/])", replacement, text)
     return text
+
+
+def _normalise_decimal_fractions(text: str) -> str:
+    for source, replacement, numerator, denominator in FRACTIONS:
+        text = re.sub(
+            rf"(\d+)\s+{re.escape(source)}(?![\d/])",
+            lambda match: _decimal_fraction(numerator, denominator, whole=int(match.group(1))),
+            text,
+        )
+        text = re.sub(
+            rf"(\d+)\s*{re.escape(replacement)}",
+            lambda match: _decimal_fraction(numerator, denominator, whole=int(match.group(1))),
+            text,
+        )
+        text = re.sub(
+            rf"(?<![\d/]){re.escape(source)}(?![\d/])",
+            _decimal_fraction(numerator, denominator),
+            text,
+        )
+        text = re.sub(
+            rf"(?<!\d){re.escape(replacement)}",
+            _decimal_fraction(numerator, denominator),
+            text,
+        )
+    return text
+
+
+def _decimal_fraction(numerator: int, denominator: int, whole: int = 0) -> str:
+    value = whole + numerator / denominator
+    return f"{value:.3f}".rstrip("0").rstrip(".")

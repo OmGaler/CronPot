@@ -20,7 +20,7 @@ frontmatter_fields = ["tags", "source", "servings"]
 
 [style]
 english = "source"
-fraction_style = "ascii"
+fraction_style = "decimal"
 method_style = "narrative"
 
 [worker]
@@ -35,7 +35,7 @@ count = 4
         self.assertEqual(config.method_heading, "You Do")
         self.assertEqual(config.frontmatter_fields, ("tags", "source", "servings"))
         self.assertEqual(config.english, "source")
-        self.assertEqual(config.fraction_style, "ascii")
+        self.assertEqual(config.fraction_style, "decimal")
         self.assertEqual(config.method_style, "narrative")
         self.assertEqual(config.worker_count, 4)
 

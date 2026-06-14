@@ -22,6 +22,12 @@ The code uses only the Python standard library.
 
 Git is optional. A vault can be a plain folder, an Obsidian vault, or a Git checkout. Use `--commit` only when you want CronPot to attempt a Git commit.
 
+## Documentation
+
+- [CLI reference](CLI.md): commands, flags, examples, exports, workers, and style config.
+- [HTTP API reference](API.md): endpoints, request bodies, response shapes, and status codes.
+- [Kubernetes guide](k8s/README.md): local cluster flow, overlays, worker Deployment, analytics CronJob, and pedagogy map.
+
 ## Schema
 
 Generated recipes use the current vault schema:
@@ -57,27 +63,14 @@ Then run `cronpot` commands from anywhere. Replace `docs` with any vault folder 
 
 ```powershell
 cronpot ingest "https://example.com/recipe" --vault docs
-cronpot ingest "https://example.com/recipe" --html-file saved-page.html --dry-run
-cronpot ingest "https://example.com/recipe" --vault docs --title "Friday Night Soup"
-cronpot import-vault "C:\path\to\ObsidianVault" --vault docs
 cronpot analytics --vault docs
-cronpot normalise ingredients --vault docs --suggest
 cronpot jobs ingest "https://example.com/recipe" --vault docs
 cronpot worker --vault docs --once --workers 2
-cronpot export "Aglio e Olio" --vault docs
-cronpot export --all --vault docs --output cookbook.html
-cronpot export --all --vault docs --format pdf --output cookbook.pdf
-cronpot export "Aglio e Olio" --vault docs --format pdf
-cronpot export "Aglio e Olio" --vault docs --format markdown --output recipe-bundle.md
 cronpot export "Aglio e Olio" "Roast Chicken" --vault docs --format shopping-list
-cronpot validate --vault docs
-cronpot start
 cronpot start --vault docs --host 127.0.0.1 --port 8080
 ```
 
-Use `--commit` with `ingest` or `import-vault` to request a Git commit. If the current folder is not a Git repository, the commit is skipped and the Markdown files are still written.
-
-When `cronpot ingest` is run interactively, it suggests the extracted recipe name before writing. Press Enter to accept it, type a replacement to rename the recipe, or pass `--title` for non-interactive runs.
+See [CLI.md](CLI.md) for the full command reference, flags, examples, and job worker workflow.
 
 ## HTTP API
 
@@ -95,31 +88,7 @@ Or use Kubernetes port-forwarding:
 scripts\k8s-port-forward.cmd cronpot-local
 ```
 
-Useful read endpoints:
-
-```powershell
-Invoke-RestMethod http://127.0.0.1:8080/healthz
-Invoke-RestMethod http://127.0.0.1:8080/analytics
-Invoke-RestMethod http://127.0.0.1:8080/recipes
-Invoke-RestMethod "http://127.0.0.1:8080/recipes?tag=meaty&category=Mains"
-Invoke-RestMethod "http://127.0.0.1:8080/recipes/Aglio%20e%20Olio"
-Invoke-RestMethod "http://127.0.0.1:8080/shopping-list?recipe=Aglio%20e%20Olio&recipe=Roast%20Chicken"
-Invoke-RestMethod "http://127.0.0.1:8080/shopping-list?all=true"
-```
-
-Write endpoint:
-
-```powershell
-Invoke-RestMethod http://127.0.0.1:8080/ingest -Method Post -ContentType "application/json" -Body '{"url":"https://example.com/recipe"}'
-```
-
-Background ingest endpoints:
-
-```powershell
-Invoke-RestMethod http://127.0.0.1:8080/jobs/ingest -Method Post -ContentType "application/json" -Body '{"url":"https://example.com/recipe"}'
-Invoke-RestMethod http://127.0.0.1:8080/jobs
-Invoke-RestMethod http://127.0.0.1:8080/jobs/run -Method Post
-```
+See [API.md](API.md) for every endpoint, query parameter, request body, response shape, and example `Invoke-RestMethod` call.
 
 Queued jobs are stored as JSON under `.cronpot/jobs` inside the vault. This gives CronPot durable background processing without requiring Postgres or Redis yet.
 
@@ -139,11 +108,14 @@ frontmatter_fields = ["tags", "source", "source_hash", "prep_time", "cook_time",
 
 [style]
 english = "british"
+# Options: unicode, ascii, decimal
 fraction_style = "unicode"
 method_style = "imperative"
 
 [worker]
 count = 2
+max_attempts = 3
+stale_after_seconds = 900
 
 [llm]
 provider = "ollama"
@@ -158,9 +130,9 @@ Set `require_dietary_tag = false` only if you intentionally want to allow recipe
 
 `[schema]` controls the Markdown shape CronPot writes and reads. The default keeps `## Ingredients` and `## Method`, but vaults can rename those headings and choose which frontmatter fields are emitted.
 
-`[style]` controls deterministic text conventions and LLM rewrite instructions. The default is British English with Unicode fractions, so `1/2 tsp` becomes `½ tsp` and `1 1/4 cups` becomes `1¼ cups`.
+`[style]` controls deterministic text conventions and LLM rewrite instructions. `fraction_style` can be `unicode`, `ascii`, or `decimal`. The default is Unicode, so `1/2 tsp` becomes `½ tsp` and `1 1/4 cups` becomes `1¼ cups`. Decimal mode writes those examples as `0.5 tsp` and `1.25 cups`.
 
-`[worker]` controls default parallelism for background ingest workers.
+`[worker]` controls default parallelism and retry behaviour for background ingest workers.
 
 For local LLM suggestions, install Ollama, start it, and pull the configured model:
 
@@ -225,7 +197,7 @@ The overlays are:
 
 Only `local` is used by `scripts\k8s-start.cmd docs`. The other overlays are for cluster promotion through CI/CD or explicit deploy commands.
 
-The Kubernetes layer demonstrates a namespace, service account, config map, persistent volume claim, API deployment, service, probes, analytics cron job, network policy, and environment overlays. The API Deployment and analytics CronJob both mount `/vault` and `/config/cronpot.toml`, so dashboard analytics and scheduled analytics use the same recipe data and ingredient normalisation settings. See `k8s/README.md` for the full flow and the teaching map for each Kubernetes resource.
+The Kubernetes layer demonstrates a namespace, service account, config map, persistent volume claim, API deployment, worker deployment, service, probes, analytics cron job, network policy, and environment overlays. The API Deployment, worker Deployment, and analytics CronJob all mount `/vault` and `/config/cronpot.toml`, so dashboard analytics, background URL ingestion, and scheduled analytics use the same recipe data and ingredient normalisation settings. See `k8s/README.md` for the full flow and the teaching map for each Kubernetes resource.
 
 Seed the local Kubernetes PVC from a local vault:
 

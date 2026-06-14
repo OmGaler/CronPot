@@ -9,11 +9,14 @@ frontmatter_fields = ["tags", "source", "source_hash", "prep_time", "cook_time",
 
 [style]
 english = "british"
+# Options: unicode, ascii, decimal
 fraction_style = "unicode"
 method_style = "imperative"
 
 [worker]
 count = 2
+max_attempts = 3
+stale_after_seconds = 900
 
 [llm]
 provider = "ollama"
