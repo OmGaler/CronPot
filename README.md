@@ -26,7 +26,8 @@ Git is optional. A vault can be a plain folder, an Obsidian vault, or a Git chec
 
 - [CLI reference](CLI.md): commands, flags, examples, exports, workers, and style config.
 - [HTTP API reference](API.md): endpoints, request bodies, response shapes, and status codes.
-- [Kubernetes guide](k8s/README.md): local cluster flow, overlays, worker Deployment, analytics CronJob, and pedagogy map.
+- [Kubernetes reference](K8S.md): local cluster flow, overlays, workloads, CI/CD, and operational commands.
+- [Kubernetes guide](k8s/README.md): detailed manifest notes, troubleshooting, and pedagogy map.
 
 ## Schema
 
@@ -68,6 +69,7 @@ cronpot jobs ingest "https://example.com/recipe" --vault docs
 cronpot worker --vault docs --once --workers 2
 cronpot export "Aglio e Olio" "Roast Chicken" --vault docs --format shopping-list
 cronpot start --vault docs --host 127.0.0.1 --port 8080
+cronpot start --lan --vault docs
 ```
 
 See [CLI.md](CLI.md) for the full command reference, flags, examples, and job worker workflow.
@@ -81,6 +83,14 @@ cronpot start --vault docs --host 127.0.0.1 --port 8080
 ```
 
 `cronpot start` prints the URL it is serving before it starts the blocking server process. Open the dashboard at `http://127.0.0.1:8080/` or `http://127.0.0.1:8080/dashboard`.
+
+For phone access on the same Wi-Fi, run:
+
+```powershell
+cronpot start --lan --vault docs
+```
+
+CronPot prints a six digit pairing code and one or more `http://.../mobile` URLs. Open a mobile URL from your phone and enter the code.
 
 Or use Kubernetes port-forwarding:
 

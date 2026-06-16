@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import secrets
+import socket
 import sys
 import time
 from pathlib import Path
@@ -140,12 +142,16 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--vault", default=None)
     serve.add_argument("--host", default="0.0.0.0")
     serve.add_argument("--port", type=int, default=8080)
+    serve.add_argument("--lan", action="store_true", help="Expose the mobile UI on the local network with a six digit pairing code.")
+    serve.add_argument("--auth-code", help="Use this pairing code instead of generating one. Intended for repeatable local testing.")
     serve.set_defaults(func=cmd_serve)
 
     start = subparsers.add_parser("start", parents=[config_parent], help="Start the ingestion and analytics HTTP service.")
     start.add_argument("--vault", default=None)
     start.add_argument("--host", default="0.0.0.0")
     start.add_argument("--port", type=int, default=8080)
+    start.add_argument("--lan", action="store_true", help="Expose the mobile UI on the local network with a six digit pairing code.")
+    start.add_argument("--auth-code", help="Use this pairing code instead of generating one. Intended for repeatable local testing.")
     start.set_defaults(func=cmd_serve)
 
     return parser
@@ -376,8 +382,13 @@ def cmd_serve(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     host = args.host
     port = args.port
+    pairing_code = _pairing_code(args) if args.lan or args.auth_code else ""
     print(f"CronPot serving on http://{host}:{port}", flush=True)
-    run_server(host, port, _vault_path(args, config), config)
+    if pairing_code:
+        print(f"CronPot mobile pairing code: {pairing_code}", flush=True)
+        for address in _local_network_addresses():
+            print(f"CronPot mobile URL: http://{address}:{port}/mobile", flush=True)
+    run_server(host, port, _vault_path(args, config), config, pairing_code=pairing_code)
     return 0
 
 
@@ -447,3 +458,25 @@ def _default_export_path(recipes: list[tuple[Path, Recipe]], extension: str) -> 
     clean = "".join(character for character in name if character not in '<>:"/\\|?*').strip(" .")
     clean = re.sub(r"\s+", " ", clean)
     return f"{clean or 'cronpot-export'}.{extension}"
+
+
+def _pairing_code(args: argparse.Namespace) -> str:
+    if args.auth_code:
+        code = re.sub(r"\D+", "", args.auth_code)
+        if len(code) != 6:
+            raise ValueError("--auth-code must contain exactly six digits.")
+        return code
+    return f"{secrets.randbelow(1_000_000):06d}"
+
+
+def _local_network_addresses() -> list[str]:
+    addresses: list[str] = []
+    try:
+        hostname = socket.gethostname()
+        for result in socket.getaddrinfo(hostname, None, family=socket.AF_INET):
+            address = result[4][0]
+            if not address.startswith("127.") and address not in addresses:
+                addresses.append(address)
+    except OSError:
+        return []
+    return addresses

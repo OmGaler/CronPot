@@ -45,6 +45,8 @@ class ServerTests(unittest.TestCase):
 
         CronPotHandler.vault_path = self.vault
         CronPotHandler.config = AutomationConfig()
+        CronPotHandler.pairing_code = ""
+        CronPotHandler.session_tokens = set()
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), CronPotHandler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -188,8 +190,39 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(retried["status"], "pending")
         self.assertEqual(retried["error"], "")
 
-    def get_json(self, path: str) -> dict[str, object]:
-        with urlopen(f"{self.base_url}{path}", timeout=5) as response:
+    def test_pairing_code_protects_api_until_mobile_authenticates(self) -> None:
+        CronPotHandler.pairing_code = "123456"
+
+        with self.assertRaises(HTTPError) as error:
+            self.get_json("/recipes")
+
+        self.assertEqual(error.exception.code, 401)
+
+        auth, cookie = self.post_json_with_cookie("/auth", {"code": "123456"})
+        self.assertEqual(auth["authenticated"], True)
+
+        payload = self.get_json("/recipes", headers={"Cookie": cookie})
+        self.assertEqual(payload["count"], 2)
+
+    def test_pairing_code_allows_bearer_code_for_api_clients(self) -> None:
+        CronPotHandler.pairing_code = "654321"
+
+        payload = self.get_json("/recipes", headers={"Authorization": "Bearer 654321"})
+
+        self.assertEqual(payload["count"], 2)
+
+    def test_serves_mobile_pairing_and_app_ui(self) -> None:
+        CronPotHandler.pairing_code = "123456"
+
+        text = self.get_text("/mobile")
+
+        self.assertIn("Pair this device", text)
+        self.assertIn("Queue recipe ingest", text)
+        self.assertIn("Shopping list", text)
+
+    def get_json(self, path: str, headers: dict[str, str] | None = None) -> dict[str, object]:
+        request = Request(f"{self.base_url}{path}", headers=headers or {})
+        with urlopen(request, timeout=5) as response:
             return json.loads(response.read().decode("utf-8"))
 
     def get_text(self, path: str) -> str:
@@ -204,6 +237,10 @@ class ServerTests(unittest.TestCase):
             return response.read().decode("utf-8")
 
     def post_json(self, path: str, payload: dict[str, object]) -> dict[str, object]:
+        result, _cookie = self.post_json_with_cookie(path, payload)
+        return result
+
+    def post_json_with_cookie(self, path: str, payload: dict[str, object]) -> tuple[dict[str, object], str]:
         request = Request(
             f"{self.base_url}{path}",
             data=json.dumps(payload).encode("utf-8"),
@@ -211,7 +248,8 @@ class ServerTests(unittest.TestCase):
             method="POST",
         )
         with urlopen(request, timeout=5) as response:
-            return json.loads(response.read().decode("utf-8"))
+            cookie = response.headers.get("Set-Cookie", "").split(";", 1)[0]
+            return json.loads(response.read().decode("utf-8")), cookie
 
 
 if __name__ == "__main__":

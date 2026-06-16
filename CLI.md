@@ -43,6 +43,12 @@ Start the local HTTP service:
 cronpot start --vault docs --host 127.0.0.1 --port 8080
 ```
 
+Start the mobile LAN UI with a six digit pairing code:
+
+```powershell
+cronpot start --lan --vault docs
+```
+
 ## `cronpot ingest`
 
 Extract a recipe URL, normalise it, optionally rewrite it with the configured LLM, and write Markdown into the vault.
@@ -207,17 +213,22 @@ cronpot html --all --vault docs --output cookbook.html
 Run the HTTP service and dashboard. `start` is an alias for `serve`.
 
 ```powershell
-cronpot start [--vault VAULT] [--host HOST] [--port PORT] [--config CONFIG]
-cronpot serve [--vault VAULT] [--host HOST] [--port PORT] [--config CONFIG]
+cronpot start [--vault VAULT] [--host HOST] [--port PORT] [--lan] [--auth-code CODE] [--config CONFIG]
+cronpot serve [--vault VAULT] [--host HOST] [--port PORT] [--lan] [--auth-code CODE] [--config CONFIG]
 ```
 
-Example:
+Examples:
 
 ```powershell
 cronpot start --vault docs --host 127.0.0.1 --port 8080
+cronpot start --lan --vault docs
 ```
 
 The command prints the serving URL, then blocks while the server is running.
+
+`--lan` is for same-network phone access. It binds to the configured host, prints a six digit pairing code, and prints detected mobile URLs such as `http://192.168.1.42:8080/mobile`. Open that URL on your phone and enter the code. After pairing, the mobile page can queue ingest jobs, refresh job status, search recipes, build shopping lists, and copy the list.
+
+`--auth-code CODE` sets a fixed six digit code instead of generating one. It is mainly for repeatable local testing.
 
 ## Style Config
 

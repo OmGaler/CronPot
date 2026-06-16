@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import secrets
 import time
 from html import escape
 from http import HTTPStatus
@@ -27,13 +28,23 @@ _llm_alias_cache: dict[tuple[str, str, str, int], tuple[float, dict[str, str]]] 
 class CronPotHandler(BaseHTTPRequestHandler):
     vault_path: Path = Path("docs")
     config: AutomationConfig = AutomationConfig()
+    pairing_code: str = ""
+    session_tokens: set[str] = set()
 
     def do_GET(self) -> None:
         request = urlparse(self.path)
         path = request.path.rstrip("/") or "/"
         query = parse_qs(request.query)
 
+        if path == "/mobile":
+            self._send_html(_mobile_html(self._is_authorised()))
+            return
+        if path == "/auth/status":
+            self._send_json({"authenticated": self._is_authorised(), "required": bool(self.pairing_code)})
+            return
         if path in {"/", "/dashboard"}:
+            if not self._require_authorised(path):
+                return
             self._send_html(_dashboard_html(self.vault_path, self.config))
             return
         if path == "/healthz":
@@ -44,6 +55,8 @@ class CronPotHandler(BaseHTTPRequestHandler):
                 self._send_json({"status": "ready"})
             else:
                 self._send_json({"status": "vault unavailable"}, status=HTTPStatus.SERVICE_UNAVAILABLE)
+            return
+        if not self._require_authorised(path):
             return
         if path == "/analytics":
             analytics = analyse_vault(
@@ -121,6 +134,21 @@ class CronPotHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         request = urlparse(self.path)
         path = request.path.rstrip("/") or "/"
+        if path == "/auth":
+            payload = self._read_json()
+            code = str(payload.get("code") or "").strip()
+            if not self.pairing_code or secrets.compare_digest(code, self.pairing_code):
+                token = secrets.token_urlsafe(24)
+                self.session_tokens.add(token)
+                self._send_json(
+                    {"authenticated": True},
+                    headers={"Set-Cookie": f"cronpot_session={token}; Path=/; SameSite=Strict; HttpOnly"},
+                )
+            else:
+                self._send_json({"error": "invalid code"}, status=HTTPStatus.UNAUTHORIZED)
+            return
+        if not self._require_authorised(path):
+            return
         if path == "/jobs/run":
             processed = run_pending_jobs(self.vault_path, self.config, workers=self.config.worker_count)
             self._send_json({"jobs": [job_to_dict(job) for job in processed]})
@@ -176,19 +204,23 @@ class CronPotHandler(BaseHTTPRequestHandler):
             return {}
         return payload if isinstance(payload, dict) else {}
 
-    def _send_json(self, payload: dict[str, Any], status: HTTPStatus = HTTPStatus.OK) -> None:
+    def _send_json(self, payload: dict[str, Any], status: HTTPStatus = HTTPStatus.OK, headers: dict[str, str] | None = None) -> None:
         body = json.dumps(payload, indent=2).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(body)
 
-    def _send_html(self, body: str, status: HTTPStatus = HTTPStatus.OK) -> None:
+    def _send_html(self, body: str, status: HTTPStatus = HTTPStatus.OK, headers: dict[str, str] | None = None) -> None:
         encoded = body.encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(encoded)))
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(encoded)
 
@@ -240,6 +272,33 @@ class CronPotHandler(BaseHTTPRequestHandler):
                 return recipe_path, recipe
         return None
 
+    def _is_authorised(self) -> bool:
+        if not self.pairing_code:
+            return True
+        auth_header = self.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer ") and secrets.compare_digest(auth_header.removeprefix("Bearer ").strip(), self.pairing_code):
+            return True
+        if secrets.compare_digest(self.headers.get("X-CronPot-Code", "").strip(), self.pairing_code):
+            return True
+        cookies = self.headers.get("Cookie", "")
+        for cookie in cookies.split(";"):
+            name, _, value = cookie.strip().partition("=")
+            if name == "cronpot_session" and value in self.session_tokens:
+                return True
+        return False
+
+    def _require_authorised(self, path: str) -> bool:
+        if self._is_authorised():
+            return True
+        if self._wants_html():
+            self._send_html(_mobile_html(False), status=HTTPStatus.UNAUTHORIZED)
+        else:
+            self._send_json(
+                {"error": "pairing code required", "mobile": "/mobile"},
+                status=HTTPStatus.UNAUTHORIZED,
+            )
+        return False
+
 
 def _recipe_summary(recipe_path: Path, recipe: Recipe) -> dict[str, Any]:
     return {
@@ -277,6 +336,162 @@ def _recipe_page_html(recipe_path: Path, recipe: Recipe) -> str:
         "<body>",
         '<body><p style="max-width: 72rem; margin: 1rem auto 0; padding: 0 1rem;"><a href="/dashboard">Dashboard</a></p>',
         1,
+    )
+
+
+def _mobile_html(authorised: bool) -> str:
+    app_display = "block" if authorised else "none"
+    auth_display = "none" if authorised else "block"
+    return "\n".join(
+        [
+            "<!doctype html>",
+            '<html lang="en-GB">',
+            "<head>",
+            '  <meta charset="utf-8">',
+            '  <meta name="viewport" content="width=device-width, initial-scale=1">',
+            "  <title>CronPot Mobile</title>",
+            "  <style>",
+            "    :root { color-scheme: light; --ink: #20241f; --muted: #626b60; --line: #d8ddd2; --surface: #f7f6ef; --panel: #ffffff; --accent: #2f6f4f; --danger: #9e3f3f; }",
+            "    * { box-sizing: border-box; }",
+            "    body { margin: 0; background: var(--surface); color: var(--ink); font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; line-height: 1.45; }",
+            "    main { max-width: 780px; margin: 0 auto; padding: 22px 16px 42px; }",
+            "    header { border-bottom: 1px solid var(--line); padding-bottom: 16px; margin-bottom: 18px; }",
+            "    h1 { font-size: 30px; line-height: 1.05; margin: 0 0 8px; }",
+            "    h2 { font-size: 18px; margin: 0 0 10px; }",
+            "    p { margin: 0; }",
+            "    a { color: var(--accent); text-decoration: none; }",
+            "    label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }",
+            "    input, select, button { width: 100%; min-height: 46px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); font: inherit; padding: 10px 12px; border-radius: 0; }",
+            "    button { border-color: var(--accent); background: var(--accent); color: white; font-weight: 700; }",
+            "    button.secondary { background: transparent; color: var(--accent); }",
+            "    section { border-top: 1px solid var(--line); padding-top: 18px; margin-top: 18px; }",
+            "    .row { display: grid; gap: 10px; }",
+            "    .status { min-height: 22px; color: var(--muted); margin-top: 8px; }",
+            "    .error { color: var(--danger); }",
+            "    .jobs, .items, .recipes { display: grid; gap: 8px; margin-top: 10px; }",
+            "    .job, .item, .recipe { background: var(--panel); border: 1px solid var(--line); padding: 10px 12px; }",
+            "    .recipe { display: grid; grid-template-columns: 24px 1fr; gap: 8px; align-items: start; }",
+            "    .recipe input { min-height: 22px; width: 22px; padding: 0; margin-top: 2px; }",
+            "    .muted { color: var(--muted); }",
+            "    .toolbar { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }",
+            "    @media (min-width: 680px) { .row.two { grid-template-columns: 1fr auto; align-items: end; } .row.two button { width: auto; min-width: 140px; } }",
+            "  </style>",
+            "</head>",
+            "<body>",
+            "  <main>",
+            "    <header>",
+            "      <h1>CronPot</h1>",
+            "      <p class=\"muted\">Mobile tools for ingest jobs and shopping lists.</p>",
+            "    </header>",
+            f"    <section id=\"auth\" style=\"display: {auth_display};\">",
+            "      <h2>Pair this device</h2>",
+            "      <div class=\"row two\">",
+            "        <div><label for=\"code\">Six digit code</label><input id=\"code\" inputmode=\"numeric\" autocomplete=\"one-time-code\" maxlength=\"6\" placeholder=\"123456\"></div>",
+            "        <button id=\"pair\">Connect</button>",
+            "      </div>",
+            "      <p id=\"authStatus\" class=\"status\">Enter the code shown in the CronPot terminal.</p>",
+            "    </section>",
+            f"    <div id=\"app\" style=\"display: {app_display};\">",
+            "      <section>",
+            "        <h2>Queue recipe ingest</h2>",
+            "        <div class=\"row two\">",
+            "          <div><label for=\"url\">Recipe URL</label><input id=\"url\" type=\"url\" placeholder=\"https://...\"></div>",
+            "          <button id=\"queue\">Queue</button>",
+            "        </div>",
+            "        <p id=\"ingestStatus\" class=\"status\"></p>",
+            "      </section>",
+            "      <section>",
+            "        <h2>Recent jobs</h2>",
+            "        <button id=\"refreshJobs\" class=\"secondary\">Refresh jobs</button>",
+            "        <div id=\"jobs\" class=\"jobs\"><p class=\"muted\">No jobs loaded.</p></div>",
+            "      </section>",
+            "      <section>",
+            "        <h2>Shopping list</h2>",
+            "        <div class=\"row\">",
+            "          <div><label for=\"search\">Find recipes</label><input id=\"search\" placeholder=\"Search by name, category, or tag\"></div>",
+            "          <div class=\"toolbar\"><button id=\"buildList\">Build list</button><button id=\"copyList\" class=\"secondary\">Copy</button></div>",
+            "        </div>",
+            "        <div id=\"recipes\" class=\"recipes\"><p class=\"muted\">Loading recipes...</p></div>",
+            "        <div id=\"shopping\" class=\"items\"></div>",
+            "      </section>",
+            "      <section>",
+            "        <p><a href=\"/dashboard\">Open dashboard</a></p>",
+            "      </section>",
+            "    </div>",
+            "  </main>",
+            "  <script>",
+            "    const state = { recipes: [], shoppingText: '' };",
+            "    const $ = (id) => document.getElementById(id);",
+            "    async function request(path, options = {}) {",
+            "      const response = await fetch(path, { credentials: 'same-origin', ...options });",
+            "      const text = await response.text();",
+            "      const data = text ? JSON.parse(text) : {};",
+            "      if (!response.ok) throw new Error(data.error || response.statusText);",
+            "      return data;",
+            "    }",
+            "    async function pair() {",
+            "      $('authStatus').textContent = 'Checking code...';",
+            "      try {",
+            "        await request('/auth', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: $('code').value }) });",
+            "        $('auth').style.display = 'none'; $('app').style.display = 'block';",
+            "        await loadAll();",
+            "      } catch (error) { $('authStatus').innerHTML = '<span class=\"error\">' + error.message + '</span>'; }",
+            "    }",
+            "    async function queueIngest() {",
+            "      const url = $('url').value.trim();",
+            "      if (!url) return;",
+            "      $('ingestStatus').textContent = 'Queueing...';",
+            "      try {",
+            "        const job = await request('/jobs/ingest', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }) });",
+            "        $('ingestStatus').textContent = 'Queued ' + job.id;",
+            "        $('url').value = '';",
+            "        await loadJobs();",
+            "      } catch (error) { $('ingestStatus').innerHTML = '<span class=\"error\">' + error.message + '</span>'; }",
+            "    }",
+            "    async function loadJobs() {",
+            "      const data = await request('/jobs');",
+            "      const jobs = data.jobs.slice().sort((a, b) => b.updated_at - a.updated_at).slice(0, 8);",
+            "      $('jobs').innerHTML = jobs.length ? jobs.map(job => '<div class=\"job\"><strong>' + job.status + '</strong><br><span>' + escapeHtml(job.title || job.url || job.id) + '</span><br><span class=\"muted\">Attempts: ' + job.attempts + '</span></div>').join('') : '<p class=\"muted\">No queued jobs.</p>';",
+            "    }",
+            "    async function loadRecipes() {",
+            "      const data = await request('/recipes');",
+            "      state.recipes = data.recipes;",
+            "      renderRecipes();",
+            "    }",
+            "    function renderRecipes() {",
+            "      const query = $('search').value.trim().toLowerCase();",
+            "      const recipes = state.recipes.filter(recipe => !query || [recipe.title, recipe.name, ...(recipe.categories || []), ...(recipe.tags || [])].join(' ').toLowerCase().includes(query)).slice(0, 50);",
+            "      $('recipes').innerHTML = recipes.length ? recipes.map(recipe => '<label class=\"recipe\"><input type=\"checkbox\" value=\"' + escapeAttr(recipe.name) + '\"><span><strong>' + escapeHtml(recipe.title || recipe.name) + '</strong><br><span class=\"muted\">' + escapeHtml((recipe.categories || []).join(', ')) + '</span></span></label>').join('') : '<p class=\"muted\">No matching recipes.</p>';",
+            "    }",
+            "    async function buildShoppingList() {",
+            "      const selected = Array.from(document.querySelectorAll('#recipes input:checked')).map(input => input.value);",
+            "      if (!selected.length) { $('shopping').innerHTML = '<p class=\"muted\">Select at least one recipe.</p>'; return; }",
+            "      const query = selected.map(name => 'recipe=' + encodeURIComponent(name)).join('&');",
+            "      const data = await request('/shopping-list?' + query);",
+            "      state.shoppingText = 'Shopping list\\n' + data.items.map(item => '- ' + item).join('\\n');",
+            "      $('shopping').innerHTML = data.items.map(item => '<div class=\"item\">' + escapeHtml(item) + '</div>').join('');",
+            "    }",
+            "    async function copyShoppingList() {",
+            "      if (!state.shoppingText) await buildShoppingList();",
+            "      if (state.shoppingText) await navigator.clipboard.writeText(state.shoppingText);",
+            "    }",
+            "    function escapeHtml(value) { return String(value || '').replace(/[&<>\"]/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[char])); }",
+            "    function escapeAttr(value) { return escapeHtml(value).replace(/'/g, '&#39;'); }",
+            "    async function loadAll() { await Promise.all([loadRecipes(), loadJobs()]); }",
+            "    $('pair').addEventListener('click', pair);",
+            "    $('code').addEventListener('keydown', event => { if (event.key === 'Enter') pair(); });",
+            "    $('queue').addEventListener('click', queueIngest);",
+            "    $('refreshJobs').addEventListener('click', loadJobs);",
+            "    $('search').addEventListener('input', renderRecipes);",
+            "    $('buildList').addEventListener('click', buildShoppingList);",
+            "    $('copyList').addEventListener('click', copyShoppingList);",
+            f"    if ({str(authorised).lower()}) loadAll();",
+            "    setInterval(() => { if ($('app').style.display !== 'none') loadJobs().catch(() => {}); }, 5000);",
+            "  </script>",
+            "</body>",
+            "</html>",
+            "",
+        ]
     )
 
 
@@ -466,8 +681,10 @@ def _truthy(value: str) -> bool:
     return value.strip().casefold() in {"1", "true", "yes", "y", "on"}
 
 
-def run_server(host: str, port: int, vault_path: Path | str, config: AutomationConfig) -> None:
+def run_server(host: str, port: int, vault_path: Path | str, config: AutomationConfig, pairing_code: str = "") -> None:
     CronPotHandler.vault_path = Path(vault_path)
     CronPotHandler.config = config
+    CronPotHandler.pairing_code = pairing_code
+    CronPotHandler.session_tokens = set()
     server = ThreadingHTTPServer((host, port), CronPotHandler)
     server.serve_forever()

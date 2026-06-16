@@ -140,6 +140,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(run_server.call_args.args[0], "127.0.0.1")
         self.assertEqual(run_server.call_args.args[1], 9090)
         self.assertEqual(run_server.call_args.args[2], "docs")
+        self.assertEqual(run_server.call_args.kwargs["pairing_code"], "")
 
     def test_start_command_prints_default_port(self) -> None:
         stdout = StringIO()
@@ -148,6 +149,16 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         self.assertIn("CronPot serving on http://0.0.0.0:8080", stdout.getvalue())
+
+    def test_start_lan_command_prints_pairing_code_and_mobile_url(self) -> None:
+        stdout = StringIO()
+        with patch("cronpot.cli.run_server") as run_server, patch("cronpot.cli._local_network_addresses", return_value=["192.168.1.10"]), redirect_stdout(stdout):
+            exit_code = main(["start", "--lan", "--auth-code", "123456", "--vault", "docs"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(run_server.call_args.kwargs["pairing_code"], "123456")
+        self.assertIn("CronPot mobile pairing code: 123456", stdout.getvalue())
+        self.assertIn("http://192.168.1.10:8080/mobile", stdout.getvalue())
 
     def test_normalise_ingredients_suggest_prints_aliases(self) -> None:
         stdout = StringIO()

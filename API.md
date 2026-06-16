@@ -14,6 +14,76 @@ http://127.0.0.1:8080
 
 All API responses are JSON except dashboard and recipe HTML views. JSON request bodies must use `Content-Type: application/json`.
 
+## Local Network Pairing
+
+Start LAN mode:
+
+```powershell
+cronpot start --lan --vault docs
+```
+
+CronPot prints a six digit pairing code and detected mobile URLs such as:
+
+```text
+http://192.168.1.42:8080/mobile
+```
+
+When pairing is enabled, all application API endpoints require either a paired browser session cookie or the code as an API credential. `/mobile`, `/auth`, `/auth/status`, `/healthz`, and `/readyz` remain reachable so devices can pair and health checks can work.
+
+For simple API clients, pass the code directly:
+
+```http
+Authorization: Bearer 123456
+```
+
+or:
+
+```http
+X-CronPot-Code: 123456
+```
+
+Unauthorised API response:
+
+```json
+{
+  "error": "pairing code required",
+  "mobile": "/mobile"
+}
+```
+
+### `GET /mobile`
+
+Returns the phone-oriented HTML UI. It includes pairing, URL ingest job queueing, job status, recipe search, shopping list generation, and copy-to-clipboard.
+
+### `POST /auth`
+
+Pairs the browser session when the code matches.
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8080/auth -Method Post -ContentType "application/json" -Body '{"code":"123456"}'
+```
+
+Success response:
+
+```json
+{
+  "authenticated": true
+}
+```
+
+The response sets a `cronpot_session` cookie for the current browser.
+
+### `GET /auth/status`
+
+Returns whether the current request is paired.
+
+```json
+{
+  "authenticated": true,
+  "required": true
+}
+```
+
 ## Dashboard
 
 ### `GET /` and `GET /dashboard`
