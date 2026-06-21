@@ -186,11 +186,6 @@ def build_parser() -> argparse.ArgumentParser:
     k8s_github_secret.add_argument("--username", default="x-access-token")
     k8s_github_secret.add_argument("--author-name", default="CronPot")
     k8s_github_secret.add_argument("--author-email", default="cronpot@example.local")
-    k8s_github_secret.add_argument(
-        "--allow-project-repo",
-        action="store_true",
-        help="Allow the CronPot source repository as the vault repository. This is usually unsafe.",
-    )
     k8s_github_secret.set_defaults(func=cmd_k8s_github_secret)
 
     k8s_github_pull = k8s_github_subparsers.add_parser("pull", help="Pull the GitHub vault repository into the Kubernetes PVC.")
@@ -451,7 +446,7 @@ def cmd_k8s_github_secret(args: argparse.Namespace) -> int:
     token = os.environ.get("CRONPOT_GITHUB_TOKEN", "")
     if not token:
         raise ValueError("Set CRONPOT_GITHUB_TOKEN to a GitHub token that can read and write the vault repository.")
-    _validate_vault_repository(args.repo, args.allow_project_repo)
+    _validate_vault_repository(args.repo)
     _run(["kubectl", "create", "namespace", args.namespace, "--dry-run=client", "-o", "yaml"], stdout_to_stdin=["kubectl", "apply", "-f", "-"])
     _run_with_input(["kubectl", "apply", "-f", "-"], _github_secret_yaml(args, token))
     print(f"Configured GitHub vault Secret cronpot-vault-github in namespace {args.namespace}.")
@@ -559,16 +554,13 @@ def _pairing_code(args: argparse.Namespace) -> str:
     return f"{secrets.randbelow(1_000_000):06d}"
 
 
-def _validate_vault_repository(repo: str, allow_project_repo: bool) -> None:
+def _validate_vault_repository(repo: str) -> None:
     if _repository_url_contains_credentials(repo):
         raise ValueError("The vault repository URL must not contain credentials. Use CRONPOT_GITHUB_TOKEN or --token instead.")
 
     project_repo = _git_remote_url("origin")
-    if not allow_project_repo and project_repo and _normalise_repository_url(repo) == _normalise_repository_url(project_repo):
-        raise ValueError(
-            "The vault repository matches this CronPot project repository. Use a separate recipe vault repository, "
-            "or pass --allow-project-repo only when that is intentional."
-        )
+    if project_repo and _normalise_repository_url(repo) == _normalise_repository_url(project_repo):
+        raise ValueError("The vault repository matches this CronPot project repository. Use a separate recipe vault repository.")
 
 
 def _repository_url_contains_credentials(repo: str) -> bool:

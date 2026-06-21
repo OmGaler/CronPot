@@ -245,7 +245,7 @@ cronpot k8s push-local docs --namespace cronpot-local
 
 By default this copies `docs` into `/vault/docs`, matching the repository-root PVC layout used by the GitHub sync commands.
 
-To sync directly with a separate GitHub-backed vault repository, configure a Kubernetes Secret once, then run pull or push Jobs. Do not use the public CronPot application repository as the vault; the CLI rejects a URL matching this checkout's `origin` remote unless `--allow-project-repo` is supplied explicitly:
+To sync directly with a separate GitHub-backed vault repository, configure a Kubernetes Secret once, then run pull or push Jobs. Do not use the public CronPot application repository as the vault; the CLI rejects a URL matching this checkout's `origin` remote:
 
 ```powershell
 $env:CRONPOT_GITHUB_TOKEN = "github_pat_..."

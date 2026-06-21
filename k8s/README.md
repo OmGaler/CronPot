@@ -195,7 +195,7 @@ cronpot k8s sync-back docs --namespace cronpot-local --commit
 
 ## GitHub-Backed Vault Sync
 
-For a vault whose source of truth is a separate GitHub repository, configure the repository and token as a Kubernetes Secret. Do not use the public CronPot application repository as the vault; the CLI rejects a URL matching this checkout's `origin` remote unless `--allow-project-repo` is supplied explicitly:
+For a vault whose source of truth is a separate GitHub repository, configure the repository and token as a Kubernetes Secret. Do not use the public CronPot application repository as the vault; the CLI rejects a URL matching this checkout's `origin` remote:
 
 ```powershell
 $env:CRONPOT_GITHUB_TOKEN = "github_pat_..."

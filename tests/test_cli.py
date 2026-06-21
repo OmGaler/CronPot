@@ -224,22 +224,6 @@ class CliTests(unittest.TestCase):
         self.assertEqual(exit_code, 1)
         self.assertIn("matches this CronPot project repository", stderr.getvalue())
 
-    def test_k8s_github_secret_allows_project_repository_with_explicit_override(self) -> None:
-        with patch.dict(os.environ, {"CRONPOT_GITHUB_TOKEN": "token"}), patch(
-            "cronpot.cli._git_remote_url", return_value="https://github.com/example/cronpot.git"
-        ), patch("cronpot.cli._run"), patch("cronpot.cli._run_with_input"):
-            exit_code = main(
-                [
-                    "k8s",
-                    "github",
-                    "secret",
-                    "--repo",
-                    "https://github.com/example/cronpot.git",
-                    "--allow-project-repo",
-                ]
-            )
-        self.assertEqual(exit_code, 0)
-
     def test_k8s_github_push_creates_sync_job(self) -> None:
         with patch("cronpot.cli._run_with_input") as apply, patch("cronpot.cli._run") as run, patch("cronpot.cli.subprocess.run"), patch("cronpot.cli.time.strftime", return_value="20260617010101"), redirect_stdout(StringIO()):
             exit_code = main(["k8s", "github", "push", "--namespace", "cronpot-local", "--message", "Sync from test"])

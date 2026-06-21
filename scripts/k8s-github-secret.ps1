@@ -6,8 +6,7 @@ param(
     [string]$Path = ".",
     [string]$Username = "x-access-token",
     [string]$AuthorName = "CronPot",
-    [string]$AuthorEmail = "cronpot@example.local",
-    [switch]$AllowProjectRepo
+    [string]$AuthorEmail = "cronpot@example.local"
 )
 
 $ErrorActionPreference = "Stop"
@@ -37,7 +36,7 @@ function ConvertTo-RepositoryIdentity {
 }
 
 $origin = git remote get-url origin 2>$null
-if ($LASTEXITCODE -eq 0 -and -not $AllowProjectRepo -and (ConvertTo-RepositoryIdentity $Repo) -eq (ConvertTo-RepositoryIdentity $origin)) {
+if ($LASTEXITCODE -eq 0 -and (ConvertTo-RepositoryIdentity $Repo) -eq (ConvertTo-RepositoryIdentity $origin)) {
     throw "The vault repository matches this CronPot project repository. Use a separate recipe vault repository."
 }
 
