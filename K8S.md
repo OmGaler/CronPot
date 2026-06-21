@@ -41,7 +41,7 @@ PowerShell:
 .\scripts\k8s-start.ps1 -Source docs
 ```
 
-This applies the local overlay, restarts the API and worker Deployments, seeds `/vault`, prints the dashboard URL, and starts a blocking port-forward to:
+This applies the local overlay, restarts the API and worker Deployments, seeds `docs` into `/vault/docs`, prints the dashboard URL, and starts a blocking port-forward to:
 
 ```text
 http://127.0.0.1:8080/dashboard
@@ -58,6 +58,30 @@ Clear the PVC before seeding:
 ```cmd
 scripts\k8s-start.cmd docs cronpot-local 8080 /clear
 ```
+
+## Local Mobile Access
+
+Start local Kubernetes with LAN pairing:
+
+```cmd
+scripts\k8s-start.cmd docs /lan
+```
+
+PowerShell:
+
+```powershell
+.\scripts\k8s-start.ps1 -Source docs -Lan
+```
+
+The helper:
+
+- generates a six digit pairing code
+- stores it in Secret `cronpot-local-auth` as key `code`
+- deploys/restarts the local API pod
+- binds port-forwarding to `0.0.0.0`
+- prints mobile URLs such as `http://192.168.1.42:8080/mobile`
+
+The local API Deployment reads that Secret through `CRONPOT_AUTH_CODE`. The Secret is optional in the manifest so ordinary local rendering still works. Running `scripts\k8s-start.cmd docs` without `/lan` deletes the local auth Secret and returns to localhost-only development.
 
 ## Render And Deploy
 
@@ -86,7 +110,7 @@ Local browser access:
 scripts\k8s-port-forward.cmd cronpot-local
 ```
 
-Phone access on the same Wi-Fi, with care:
+Manual phone access on the same Wi-Fi, with care:
 
 ```powershell
 kubectl -n cronpot-local port-forward --address 0.0.0.0 service/cronpot-api 8080:80
@@ -98,7 +122,7 @@ Then open this from the phone:
 http://YOUR-PC-IP:8080/mobile
 ```
 
-The Kubernetes Deployment does not enable a pairing code by default. Use this only on a trusted private network, keep the default localhost-only port-forward for routine work, or add an explicit auth boundary before exposing write endpoints more broadly. For the simple paired phone flow, prefer `cronpot start --lan --vault docs` outside Kubernetes.
+Prefer the `/lan` helper above because it also creates the pairing Secret. Use manual `--address 0.0.0.0` only on a trusted private network or after creating your own auth Secret.
 
 ## Seeding The Vault
 
@@ -113,6 +137,78 @@ Clear first:
 ```cmd
 scripts\k8s-seed-vault.cmd docs cronpot-local /clear
 ```
+
+## Syncing Back From Kubernetes
+
+Copy the PVC-backed vault back into a local folder:
+
+```cmd
+cronpot k8s sync-back docs --namespace cronpot-local
+```
+
+Script wrapper:
+
+```powershell
+.\scripts\k8s-sync-back.ps1 -Target docs -Namespace cronpot-local
+```
+
+Sync-back is additive by default: it copies new and changed files from `/vault` into the target folder, but it does not delete local files that are absent from the PVC. This is deliberate for Obsidian/Git-backed vaults. Runtime queue files under `.cronpot` are not copied back.
+
+Copy a local vault folder into the PVC before pushing those local changes to GitHub:
+
+```cmd
+cronpot k8s push-local docs --namespace cronpot-local
+```
+
+This copies `docs` into `/vault/docs` by default. Use `--clear` to replace the remote folder contents before copying.
+
+If the target is a Git repository, show changes and commit them:
+
+```cmd
+cronpot k8s sync-back docs --namespace cronpot-local --commit --message "Sync CronPot vault from Kubernetes"
+```
+
+```powershell
+.\scripts\k8s-sync-back.ps1 -Target docs -Namespace cronpot-local -Commit -Message "Sync CronPot vault from Kubernetes"
+```
+
+## Syncing Directly With GitHub
+
+Configure a Kubernetes Secret for a separate GitHub-backed vault repository. Do not use the public CronPot application repository as the vault; the CLI rejects a URL matching this checkout's `origin` remote unless `--allow-project-repo` is supplied explicitly. Use a fine-grained GitHub token with repository contents read/write access. Prefer an environment variable so the token is not typed into shell history:
+
+```powershell
+$env:CRONPOT_GITHUB_TOKEN = "github_pat_..."
+cronpot k8s github secret --namespace cronpot-local --repo "https://github.com/YOU/YOUR-VAULT.git" --branch main --path "." --author-name "cronpot-bot" --author-email "cronpot-bot@example.local"
+```
+
+Short alias:
+
+```cmd
+cronpot k github secret --namespace cronpot-local --repo "https://github.com/YOU/YOUR-VAULT.git" --author-name "cronpot-bot" --author-email "cronpot-bot@example.local"
+```
+
+Pull the repository into the PVC:
+
+```cmd
+cronpot k8s github pull --namespace cronpot-local
+```
+
+This updates the Kubernetes PVC at `/vault`. It does not change your local `docs` folder unless you sync back afterwards:
+
+```cmd
+cronpot k8s github pull --namespace cronpot-local --sync-back docs
+```
+
+Push the current PVC contents back to GitHub:
+
+```cmd
+cronpot k8s push-local docs --namespace cronpot-local
+cronpot k8s github push --namespace cronpot-local --message "Sync CronPot vault from Kubernetes"
+```
+
+The sync runs as a one-shot Kubernetes Job using `alpine/git`. It mounts the same `cronpot-vault` PVC as the API and worker, skips `.cronpot` runtime queue files when pushing, preserves GitHub files that are absent from the PVC, and deletes the Job after completion by default.
+
+The older `scripts\k8s-github-*.ps1` and `.cmd` wrappers remain available, but the CLI is the preferred interface because it validates options consistently.
 
 ## Jobs And Workers
 
@@ -142,6 +238,16 @@ kubectl -n cronpot-local logs job/cronpot-analytics-manual
 
 The CronJob mounts the same `/vault` and `/config/cronpot.toml` as the API and worker.
 
+## Live Smoke Test
+
+Run the live smoke path:
+
+```cmd
+scripts\k8s-smoke.cmd docs
+```
+
+The smoke helper deploys the local overlay, clears and seeds the PVC, starts a temporary local recipe source, queues an ingest job through the API, waits for the worker Deployment to complete it, syncs the PVC back into a temporary local folder, and verifies that the new recipe Markdown was copied back.
+
 ## LLM Integration
 
 The base config points at an in-cluster Ollama DNS name:
@@ -151,7 +257,7 @@ The base config points at an in-cluster Ollama DNS name:
 base_url = "http://ollama.ollama.svc.cluster.local:11434"
 model = "qwen2.5:3b"
 auto_normalise_ingredients = true
-rewrite_ingested_recipes = false
+rewrite_ingested_recipes = true
 ```
 
 For local-only development, either deploy Ollama in-cluster or change the ConfigMap to point to an endpoint reachable from the pod.

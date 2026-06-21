@@ -220,13 +220,15 @@ def _parse_recipe_response(text: str) -> Recipe:
     parsed = _parse_json_object(text)
     recipe = parsed.get("recipe")
     if not isinstance(recipe, dict):
+        recipe = parsed if _looks_like_recipe_object(parsed) else None
+    if not isinstance(recipe, dict):
         raise LlmError('Ollama JSON must contain a "recipe" object.')
 
     title = _json_string(recipe.get("title"))
     ingredients = _json_string_list(recipe.get("ingredients"))
     steps = _json_string_list(recipe.get("steps"))
-    if not title or not ingredients or not steps:
-        raise LlmError("Ollama recipe rewrite must include title, ingredients, and steps.")
+    if not title and not ingredients and not steps:
+        raise LlmError("Ollama recipe rewrite must include recipe content.")
 
     return Recipe(
         title=title,
@@ -239,6 +241,24 @@ def _parse_recipe_response(text: str) -> Recipe:
         yield_amount=_json_string(recipe.get("yield")),
         tags=_json_string_list(recipe.get("tags")),
         categories=_json_string_list(recipe.get("categories")),
+    )
+
+
+def _looks_like_recipe_object(value: dict[str, Any]) -> bool:
+    return any(
+        key in value
+        for key in (
+            "title",
+            "ingredients",
+            "steps",
+            "prep_time",
+            "cook_time",
+            "total_time",
+            "servings",
+            "yield",
+            "tags",
+            "categories",
+        )
     )
 
 

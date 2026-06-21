@@ -6,6 +6,16 @@ import tomllib
 
 
 DEFAULT_CONFIG_PATH = "cronpot.toml"
+DEFAULT_FRONTMATTER_FIELDS = (
+    "tags",
+    "source",
+    "source_hash",
+    "prep_time",
+    "cook_time",
+    "total_time",
+    "servings",
+    "yield",
+)
 
 
 @dataclass(slots=True)
@@ -14,16 +24,7 @@ class AutomationConfig:
     require_dietary_tag: bool = True
     ingredient_heading: str = "Ingredients"
     method_heading: str = "Method"
-    frontmatter_fields: tuple[str, ...] = (
-        "tags",
-        "source",
-        "source_hash",
-        "prep_time",
-        "cook_time",
-        "total_time",
-        "servings",
-        "yield",
-    )
+    frontmatter_fields: tuple[str, ...] = DEFAULT_FRONTMATTER_FIELDS
     english: str = "british"
     fraction_style: str = "unicode"
     method_style: str = "imperative"
@@ -69,7 +70,7 @@ def load_config(path: str | Path | None = None) -> AutomationConfig:
         method_heading=str(schema_config.get("method_heading") or "Method"),
         frontmatter_fields=_string_tuple(
             schema_config.get("frontmatter_fields"),
-            AutomationConfig.frontmatter_fields,
+            DEFAULT_FRONTMATTER_FIELDS,
         ),
         english=str(style_config.get("english") or "british").casefold(),
         fraction_style=str(style_config.get("fraction_style") or "unicode").casefold(),

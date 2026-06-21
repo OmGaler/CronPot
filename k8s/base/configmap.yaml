@@ -5,7 +5,7 @@ metadata:
 data:
   cronpot.toml: |
     [recipe]
-    default_vault = "/vault"
+    default_vault = "/vault/docs"
     require_dietary_tag = true
 
     [schema]
@@ -29,5 +29,5 @@ data:
     base_url = "http://ollama.ollama.svc.cluster.local:11434"
     model = "qwen2.5:3b"
     auto_normalise_ingredients = true
-    rewrite_ingested_recipes = false
+    rewrite_ingested_recipes = true
     ingredient_limit = 120

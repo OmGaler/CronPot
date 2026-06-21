@@ -230,6 +230,8 @@ The command prints the serving URL, then blocks while the server is running.
 
 `--auth-code CODE` sets a fixed six digit code instead of generating one. It is mainly for repeatable local testing.
 
+`CRONPOT_AUTH_CODE` can also provide the code through the environment. The local Kubernetes overlay uses this via a Secret so the command line does not contain the code.
+
 ## Style Config
 
 The relevant style options are:
@@ -246,3 +248,49 @@ method_style = "imperative"
 - `unicode`: converts `1/2 tsp` to `½ tsp` and `1 1/4 cups` to `1¼ cups`.
 - `ascii`: preserves ASCII fractions from the source.
 - `decimal`: converts ASCII and Unicode fractions to decimals, for example `1/2 tsp` to `0.5 tsp`, `½ tsp` to `0.5 tsp`, and `1¼ cups` to `1.25 cups`.
+
+## `cronpot k8s`
+
+Kubernetes helper commands are available under `cronpot k8s`. The shorter alias `cronpot k` works too.
+
+Copy the Kubernetes PVC vault back into a local folder:
+
+```powershell
+cronpot k8s sync-back docs --namespace cronpot-local
+```
+
+Add `--commit` to commit the synced folder when it is inside the current Git repository.
+
+Copy a local vault folder into the Kubernetes PVC:
+
+```powershell
+cronpot k8s push-local docs --namespace cronpot-local
+```
+
+This copies `docs` into `/vault/docs` by default. Pass `--destination /vault/other-folder` to choose another PVC path, or `--clear` to replace the destination before copying.
+
+Configure a GitHub-backed vault Secret:
+
+```powershell
+$env:CRONPOT_GITHUB_TOKEN = "github_pat_..."
+cronpot k8s github secret --namespace cronpot-local --repo "https://github.com/YOU/YOUR-VAULT.git" --branch main --path "." --author-name "cronpot-bot" --author-email "cronpot-bot@example.local"
+```
+
+Pull GitHub into the Kubernetes PVC:
+
+```powershell
+cronpot k8s github pull --namespace cronpot-local
+```
+
+That updates the Kubernetes PVC at `/vault`. To also update your local `docs` folder in the same command:
+
+```powershell
+cronpot k8s github pull --namespace cronpot-local --sync-back docs
+```
+
+Push the Kubernetes PVC back to GitHub:
+
+```powershell
+cronpot k8s push-local docs --namespace cronpot-local
+cronpot k8s github push --namespace cronpot-local --message "Sync CronPot vault from Kubernetes"
+```

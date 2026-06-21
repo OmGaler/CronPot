@@ -5,9 +5,11 @@ __pycache__
 *.pyc
 
 docs
+docs-jobtest
 Templates
 .obsidian
 .obsidian.mobile
+.cronpot
 mkdocs.yml
 _site
 
@@ -25,3 +27,8 @@ cronpot.toml
 secrets
 kubeconfig*
 *.kubeconfig
+*.secret.*
+*.pem
+*.key
+*.crt
+*.p12

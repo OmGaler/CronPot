@@ -85,6 +85,16 @@ class LlmTests(unittest.TestCase):
         self.assertEqual(recipe.steps, ["Chop the carrot."])
         self.assertEqual(recipe.categories, ["Soups"])
 
+    def test_parses_bare_recipe_rewrite_response(self) -> None:
+        recipe = _parse_recipe_response(
+            '{"title":"Soup","ingredients":[],"steps":["Chop the carrot."],"prep_time":"","cook_time":"","total_time":"","servings":"","yield":"","tags":["starter"],"categories":["Soups"]}'
+        )
+
+        self.assertEqual(recipe.title, "Soup")
+        self.assertEqual(recipe.ingredients, [])
+        self.assertEqual(recipe.steps, ["Chop the carrot."])
+        self.assertEqual(recipe.tags, ["starter"])
+
     def test_rewrites_recipe_to_vault_style(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             vault = Path(temp_dir)
@@ -116,6 +126,24 @@ class LlmTests(unittest.TestCase):
             self.assertEqual(rewritten.steps, ["Chop the carrot."])
             self.assertEqual(rewritten.source, "https://example.com/soup")
             self.assertIn("Existing Soup", call.call_args.args[1])
+
+    def test_rewrite_preserves_original_fields_when_model_omits_them(self) -> None:
+        source = Recipe(
+            title="messy soup",
+            ingredients=["one carrot"],
+            steps=["you should chop it"],
+            source="https://example.com/soup",
+        )
+
+        with patch("cronpot.llm._ollama_models", return_value=["gemma4:latest"]), patch(
+            "cronpot.llm._call_ollama",
+            return_value='{"title":"Carrot Soup","ingredients":[],"steps":["Chop the carrot."],"prep_time":"","cook_time":"","total_time":"","servings":"","yield":"","tags":["starter"],"categories":["Soups"]}',
+        ):
+            rewritten = rewrite_recipe_to_vault_style(source, "docs", AutomationConfig())
+
+        self.assertEqual(rewritten.title, "Carrot Soup")
+        self.assertEqual(rewritten.ingredients, ["one carrot"])
+        self.assertEqual(rewritten.steps, ["Chop the carrot."])
 
 
 if __name__ == "__main__":

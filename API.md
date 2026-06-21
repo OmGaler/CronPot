@@ -42,6 +42,8 @@ or:
 X-CronPot-Code: 123456
 ```
 
+When CronPot runs in the local Kubernetes overlay, the API pod can read the same code from the `CRONPOT_AUTH_CODE` environment variable. The helper `scripts\k8s-start.cmd docs /lan` creates that value as a Kubernetes Secret and restarts the local API Deployment.
+
 Unauthorised API response:
 
 ```json

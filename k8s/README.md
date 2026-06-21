@@ -66,7 +66,7 @@ The shortest local loop is:
 scripts\k8s-start.cmd docs
 ```
 
-It applies the local overlay, waits for the API and worker Deployments, seeds `/vault` from `docs`, prints the dashboard URL, and starts a blocking port-forward to `http://127.0.0.1:8080/dashboard`. Press `Ctrl+C` to stop port-forwarding.
+It applies the local overlay, waits for the API and worker Deployments, seeds `/vault/docs` from `docs`, prints the dashboard URL, and starts a blocking port-forward to `http://127.0.0.1:8080/dashboard`. Press `Ctrl+C` to stop port-forwarding.
 
 PowerShell equivalent:
 
@@ -159,6 +159,72 @@ Expected result after seeding: the Kubernetes API should report the same recipe 
 
 This copies files into the Kubernetes PVC. It does not require Git, and it avoids storing hundreds of Markdown files inside Kubernetes ConfigMaps.
 
+## Syncing Back The Vault
+
+Recipes created inside Kubernetes live on the PVC. Sync them back into a local Obsidian or Git-backed vault with:
+
+```cmd
+cronpot k8s sync-back docs --namespace cronpot-local
+```
+
+Script wrapper:
+
+```powershell
+.\scripts\k8s-sync-back.ps1 -Target docs -Namespace cronpot-local
+```
+
+This copies new and changed files from `/vault` into the target folder. It does not delete local files by default, and it skips CronPot runtime queue files under `.cronpot`.
+
+Copy local vault changes into the PVC:
+
+```cmd
+cronpot k8s push-local docs --namespace cronpot-local
+```
+
+This copies `docs` into `/vault/docs` by default, which keeps local recipes aligned with the repository-root PVC layout used by GitHub sync. Use `--clear` when you want the remote folder replaced before copying.
+
+If the target folder is a Git repository, create a commit after syncing:
+
+```cmd
+cronpot k8s sync-back docs --namespace cronpot-local --commit
+```
+
+```powershell
+.\scripts\k8s-sync-back.ps1 -Target docs -Namespace cronpot-local -Commit
+```
+
+## GitHub-Backed Vault Sync
+
+For a vault whose source of truth is a separate GitHub repository, configure the repository and token as a Kubernetes Secret. Do not use the public CronPot application repository as the vault; the CLI rejects a URL matching this checkout's `origin` remote unless `--allow-project-repo` is supplied explicitly:
+
+```powershell
+$env:CRONPOT_GITHUB_TOKEN = "github_pat_..."
+cronpot k8s github secret --namespace cronpot-local --repo "https://github.com/YOU/YOUR-VAULT.git" --branch main --path "." --author-name "cronpot-bot" --author-email "cronpot-bot@example.local"
+```
+
+Use a fine-grained GitHub token with contents read/write access to the vault repository.
+
+Pull GitHub into the PVC:
+
+```cmd
+cronpot k8s github pull --namespace cronpot-local
+```
+
+This only updates the Kubernetes PVC mounted at `/vault`. To also copy those recipes into local `docs`, use:
+
+```cmd
+cronpot k8s github pull --namespace cronpot-local --sync-back docs
+```
+
+Push the PVC back to GitHub:
+
+```cmd
+cronpot k8s push-local docs --namespace cronpot-local
+cronpot k8s github push --namespace cronpot-local --message "Sync CronPot vault from Kubernetes"
+```
+
+These commands create one-shot Kubernetes Jobs using `alpine/git`. The token stays in the Secret `cronpot-vault-github`; it is not stored in the manifest files. The `cronpot k ...` alias is also available if you prefer a shorter command.
+
 ## API Checks
 
 With port-forwarding running, try:
@@ -180,7 +246,7 @@ The dashboard reads the same vault and config as the API endpoints. The analytic
 
 ## Smoke Testing
 
-The local smoke helper deploys the local overlay, seeds the PVC, opens a temporary port-forward, and checks `/healthz`, `/readyz`, and `/analytics`:
+The local smoke helper deploys the local overlay, clears and seeds the PVC, opens a temporary port-forward, and checks `/healthz`, `/readyz`, and `/analytics`:
 
 ```cmd
 scripts\k8s-smoke.cmd docs
@@ -193,6 +259,8 @@ PowerShell equivalent:
 ```
 
 This is intentionally a live-cluster smoke test rather than a unit test. CI still renders every overlay without needing a cluster.
+
+The smoke helper also serves a temporary recipe page, queues it through `/jobs/ingest`, waits for the `cronpot-worker` Deployment to write the recipe, syncs the PVC back into a temporary local folder, and verifies the synced Markdown exists.
 
 ## Background Workers
 

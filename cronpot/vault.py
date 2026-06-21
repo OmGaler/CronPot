@@ -7,7 +7,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from cronpot.config import AutomationConfig
+from cronpot.config import AutomationConfig, DEFAULT_FRONTMATTER_FIELDS
 from cronpot.normalisation import DIETARY_TAGS
 from cronpot.models import Recipe
 
@@ -99,7 +99,7 @@ def parse_markdown_recipe(path: Path, text: str | None = None, config: Automatio
 def load_recipes(vault_path: Path | str, config: AutomationConfig | None = None) -> list[tuple[Path, Recipe]]:
     vault = Path(vault_path)
     recipes: list[tuple[Path, Recipe]] = []
-    for path in sorted(vault.glob("*.md")):
+    for path in _markdown_recipe_paths(vault):
         recipe = parse_markdown_recipe(path, config=config)
         if recipe.ingredients or recipe.steps:
             recipes.append((path, recipe))
@@ -147,7 +147,7 @@ def find_recipe_file(vault_path: Path | str, name_or_path: str) -> Path:
         return direct
 
     requested = Path(name_or_path).stem.casefold()
-    for path in vault.glob("*.md"):
+    for path in _markdown_recipe_paths(vault):
         if path.stem.casefold() == requested:
             return path
     raise FileNotFoundError(f"No recipe found for {name_or_path!r}")
@@ -297,6 +297,18 @@ def _available_recipe_path(vault: Path, title: str, recipe_hash: str) -> Path:
     return candidate
 
 
+def _markdown_recipe_paths(vault: Path) -> list[Path]:
+    return sorted(path for path in vault.rglob("*.md") if not _is_runtime_path(path, vault))
+
+
+def _is_runtime_path(path: Path, vault: Path) -> bool:
+    try:
+        relative = path.relative_to(vault)
+    except ValueError:
+        return False
+    return any(part in {".cronpot", ".git"} for part in relative.parts)
+
+
 def _safe_filename(value: str) -> str:
     clean = re.sub(r'[<>:"/\\|?*]+', "", value)
     clean = re.sub(r"\s+", " ", clean).strip(" .")
@@ -319,9 +331,9 @@ def _unique(values: list[str]) -> list[str]:
 
 
 def _frontmatter_fields(config: AutomationConfig) -> tuple[str, ...]:
-    fields = getattr(config, "frontmatter_fields", AutomationConfig.frontmatter_fields)
+    fields = getattr(config, "frontmatter_fields", DEFAULT_FRONTMATTER_FIELDS)
     if not isinstance(fields, tuple):
-        return AutomationConfig.frontmatter_fields
+        return DEFAULT_FRONTMATTER_FIELDS
     return fields
 
 

@@ -7,7 +7,7 @@ from pathlib import Path
 from cronpot.models import Recipe
 from cronpot.normalisation import normalise_recipe
 from cronpot.config import AutomationConfig
-from cronpot.vault import parse_markdown_recipe, render_markdown, source_hash, validate_vault, write_recipe_to_vault
+from cronpot.vault import find_recipe_file, load_recipes, parse_markdown_recipe, render_markdown, source_hash, validate_vault, write_recipe_to_vault
 
 
 class VaultTests(unittest.TestCase):
@@ -139,6 +139,44 @@ tags:
             issues = validate_vault(vault, AutomationConfig(require_dietary_tag=False))
 
             self.assertFalse(any("parev" in issue.message for issue in issues))
+
+    def test_loads_recipes_from_nested_vault_folders(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            vault = Path(temp_dir)
+            nested = vault / "Mains"
+            nested.mkdir()
+            runtime = vault / ".cronpot"
+            runtime.mkdir()
+            (nested / "Pie.md").write_text(
+                """---
+tags:
+  - main
+  - parev
+---
+[[Mains]]
+
+## Ingredients
+- 1 onion
+
+## Method
+- Bake.
+""",
+                encoding="utf-8",
+            )
+            (runtime / "Ignored.md").write_text(
+                """## Ingredients
+- queue data
+
+## Method
+- Ignore.
+""",
+                encoding="utf-8",
+            )
+
+            recipes = load_recipes(vault)
+
+            self.assertEqual([recipe.title for _path, recipe in recipes], ["Pie"])
+            self.assertEqual(find_recipe_file(vault, "Pie"), nested / "Pie.md")
 
     def test_writes_same_source_to_same_file(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

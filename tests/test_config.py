@@ -8,6 +8,25 @@ from cronpot.config import load_config
 
 
 class ConfigTests(unittest.TestCase):
+    def test_loads_default_schema_when_config_omits_schema_section(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "cronpot.toml"
+            config_path.write_text(
+                """
+[recipe]
+default_vault = "docs"
+
+[llm]
+rewrite_ingested_recipes = true
+""",
+                encoding="utf-8",
+            )
+
+            config = load_config(config_path)
+
+        self.assertEqual(config.frontmatter_fields[0], "tags")
+        self.assertIn("source_hash", config.frontmatter_fields)
+
     def test_loads_schema_style_and_worker_config(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "cronpot.toml"

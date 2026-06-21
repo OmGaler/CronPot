@@ -178,6 +178,14 @@ Or, in PowerShell:
 
 That renders and applies the local overlay, waits for the API Deployment, seeds the local PVC from `docs`, prints the dashboard URL, then starts port-forwarding. The command blocks while port-forwarding is active; press `Ctrl+C` to stop it. Use `-` instead of a vault path to start without seeding:
 
+For phone access to the local Kubernetes service on the same Wi-Fi:
+
+```cmd
+scripts\k8s-start.cmd docs /lan
+```
+
+The `/lan` mode generates a six digit code, stores it in the local Kubernetes Secret `cronpot-local-auth`, exposes port-forwarding on the local network, and prints mobile URLs. A normal start without `/lan` deletes that local auth Secret.
+
 ```cmd
 scripts\k8s-start.cmd -
 ```
@@ -221,6 +229,35 @@ To reset the local PVC before copying the vault:
 scripts\k8s-seed-vault.cmd docs cronpot-local /clear
 ```
 
+Sync the Kubernetes PVC back into a local vault folder:
+
+```cmd
+cronpot k8s sync-back docs --namespace cronpot-local
+```
+
+Add `--commit` when `docs` is a Git repository and you want a commit created after the copy. The older `scripts\k8s-sync-back.cmd docs cronpot-local` wrapper is still available.
+
+Copy local vault changes into the Kubernetes PVC before pushing them to GitHub:
+
+```cmd
+cronpot k8s push-local docs --namespace cronpot-local
+```
+
+By default this copies `docs` into `/vault/docs`, matching the repository-root PVC layout used by the GitHub sync commands.
+
+To sync directly with a separate GitHub-backed vault repository, configure a Kubernetes Secret once, then run pull or push Jobs. Do not use the public CronPot application repository as the vault; the CLI rejects a URL matching this checkout's `origin` remote unless `--allow-project-repo` is supplied explicitly:
+
+```powershell
+$env:CRONPOT_GITHUB_TOKEN = "github_pat_..."
+cronpot k8s github secret --namespace cronpot-local --repo "https://github.com/YOU/YOUR-VAULT.git" --branch main --author-name "cronpot-bot" --author-email "cronpot-bot@example.local"
+cronpot k8s github pull --namespace cronpot-local
+cronpot k8s github pull --namespace cronpot-local --sync-back docs
+cronpot k8s push-local docs --namespace cronpot-local
+cronpot k8s github push --namespace cronpot-local --message "Sync CronPot vault from Kubernetes"
+```
+
+`github pull` updates the Kubernetes PVC first. Use `--sync-back docs` when you also want the local Obsidian folder updated immediately.
+
 Current local prerequisites: Docker Desktop must be running, and a Kubernetes context must be configured. `kubectl` is available on this machine; Helm is not required.
 
 Run a live local Kubernetes smoke check with:
@@ -228,6 +265,8 @@ Run a live local Kubernetes smoke check with:
 ```cmd
 scripts\k8s-smoke.cmd docs
 ```
+
+The smoke check covers seed, API health, analytics, queued ingest, worker completion, and sync-back verification.
 
 ## CI/CD
 

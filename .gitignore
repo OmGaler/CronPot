@@ -18,6 +18,7 @@ docs-jobtest/
 Templates/
 .obsidian/
 .obsidian.mobile/
+.cronpot/
 mkdocs.yml
 _site/
 

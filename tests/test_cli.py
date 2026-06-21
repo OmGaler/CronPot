@@ -8,7 +8,7 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
-from cronpot.cli import _ingest_title, main
+from cronpot.cli import _copy_local_vault_for_push, _ingest_title, _k8s_vault_destination, main
 from cronpot.config import AutomationConfig
 from cronpot.llm import IngredientAliasSuggestion
 from cronpot.models import Recipe
@@ -159,6 +159,199 @@ class CliTests(unittest.TestCase):
         self.assertEqual(run_server.call_args.kwargs["pairing_code"], "123456")
         self.assertIn("CronPot mobile pairing code: 123456", stdout.getvalue())
         self.assertIn("http://192.168.1.10:8080/mobile", stdout.getvalue())
+
+    def test_start_command_uses_auth_code_from_environment(self) -> None:
+        with patch.dict(os.environ, {"CRONPOT_AUTH_CODE": "234567"}), patch("cronpot.cli.run_server") as run_server, redirect_stdout(StringIO()):
+            exit_code = main(["start", "--vault", "docs"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(run_server.call_args.kwargs["pairing_code"], "234567")
+
+    def test_k8s_github_secret_sets_author_fields(self) -> None:
+        with patch.dict(os.environ, {"CRONPOT_GITHUB_TOKEN": "token"}), patch("cronpot.cli._run"), patch("cronpot.cli._run_with_input") as apply, redirect_stdout(StringIO()):
+            exit_code = main(
+                [
+                    "k",
+                    "github",
+                    "secret",
+                    "--namespace",
+                    "cronpot-local",
+                    "--repo",
+                    "https://github.com/example/vault.git",
+                    "--author-name",
+                    "cronpot-bot",
+                    "--author-email",
+                    "cronpot-bot@example.local",
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(apply.call_args.args[0], ["kubectl", "apply", "-f", "-"])
+        secret_yaml = apply.call_args.args[1]
+        self.assertIn("author_name: 'cronpot-bot'", secret_yaml)
+        self.assertIn("author_email: 'cronpot-bot@example.local'", secret_yaml)
+
+    def test_k8s_github_secret_rejects_credentials_in_repository_url(self) -> None:
+        stderr = StringIO()
+        with patch.dict(os.environ, {"CRONPOT_GITHUB_TOKEN": "token"}), redirect_stderr(stderr):
+            exit_code = main(
+                [
+                    "k8s",
+                    "github",
+                    "secret",
+                    "--repo",
+                    "https://token@github.com/example/vault.git",
+                ]
+            )
+
+        self.assertEqual(exit_code, 1)
+        self.assertIn("must not contain credentials", stderr.getvalue())
+
+    def test_k8s_github_secret_rejects_project_repository_by_default(self) -> None:
+        with patch.dict(os.environ, {"CRONPOT_GITHUB_TOKEN": "token"}), patch(
+            "cronpot.cli._git_remote_url", return_value="git@github.com:example/cronpot.git"
+        ), redirect_stderr(stderr := StringIO()):
+            exit_code = main(
+                [
+                    "k8s",
+                    "github",
+                    "secret",
+                    "--repo",
+                    "https://github.com/example/cronpot.git",
+                ]
+            )
+
+        self.assertEqual(exit_code, 1)
+        self.assertIn("matches this CronPot project repository", stderr.getvalue())
+
+    def test_k8s_github_secret_allows_project_repository_with_explicit_override(self) -> None:
+        with patch.dict(os.environ, {"CRONPOT_GITHUB_TOKEN": "token"}), patch(
+            "cronpot.cli._git_remote_url", return_value="https://github.com/example/cronpot.git"
+        ), patch("cronpot.cli._run"), patch("cronpot.cli._run_with_input"):
+            exit_code = main(
+                [
+                    "k8s",
+                    "github",
+                    "secret",
+                    "--repo",
+                    "https://github.com/example/cronpot.git",
+                    "--allow-project-repo",
+                ]
+            )
+        self.assertEqual(exit_code, 0)
+
+    def test_k8s_github_push_creates_sync_job(self) -> None:
+        with patch("cronpot.cli._run_with_input") as apply, patch("cronpot.cli._run") as run, patch("cronpot.cli.subprocess.run"), patch("cronpot.cli.time.strftime", return_value="20260617010101"), redirect_stdout(StringIO()):
+            exit_code = main(["k8s", "github", "push", "--namespace", "cronpot-local", "--message", "Sync from test"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(apply.call_args.args[0], ["kubectl", "apply", "-f", "-"])
+        yaml = apply.call_args.args[1]
+        self.assertIn("name: cronpot-github-push-20260617010101", yaml)
+        self.assertIn("value: 'Sync from test'", yaml)
+        self.assertIn("git config --global --add safe.directory /work/repo", yaml)
+        self.assertIn('if [ ! -d "$repo_path" ]; then', yaml)
+        self.assertNotIn('rm -rf "$repo_path"', yaml)
+        self.assertIn("key: author_name", yaml)
+        self.assertIn("key: author_email", yaml)
+        self.assertEqual(run.call_args_list[0].args[0][:4], ["kubectl", "-n", "cronpot-local", "wait"])
+
+    def test_k8s_sync_back_copies_pvc_to_local_target(self) -> None:
+        with patch("cronpot.cli._sync_k8s_vault_back") as sync_back:
+            exit_code = main(["k8s", "sync-back", "docs", "--namespace", "cronpot-local", "--commit", "--message", "Sync test"])
+
+        self.assertEqual(exit_code, 0)
+        sync_back.assert_called_once_with("docs", "cronpot-local", True, "Sync test")
+
+    def test_k8s_sync_back_uses_relative_kubectl_copy_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, patch("cronpot.cli._running_api_pod", return_value="cronpot-api-123"), patch("cronpot.cli._run") as run, patch("cronpot.cli._copy_synced_vault", return_value=3), redirect_stdout(StringIO()):
+            target = Path(temp_dir) / "docs"
+
+            from cronpot.cli import _sync_k8s_vault_back
+
+            _sync_k8s_vault_back(str(target), "cronpot-local", False, "Sync test")
+
+        command = run.call_args.args[0]
+        self.assertEqual(command, ["kubectl", "-n", "cronpot-local", "cp", "cronpot-api-123:/vault/.", "vault", "--container", "api"])
+        self.assertNotIn(":", command[5])
+
+    def test_k8s_sync_back_unwraps_matching_vault_folder(self) -> None:
+        from cronpot.cli import _sync_back_source
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            staging = root / "staging"
+            target = root / "docs"
+            nested = staging / "docs"
+            nested.mkdir(parents=True)
+            target.mkdir()
+            (nested / "Bolognese.md").write_text("recipe", encoding="utf-8")
+
+            with redirect_stdout(StringIO()):
+                source = _sync_back_source(staging, target)
+
+            self.assertEqual(source, nested)
+
+    def test_k8s_push_local_defaults_to_matching_vault_folder(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, patch("cronpot.cli._running_api_pod", return_value="cronpot-api-123"), patch("cronpot.cli._run") as run, patch(
+            "cronpot.cli._kubectl_output",
+            return_value="1",
+        ):
+            source = Path(temp_dir) / "docs"
+            source.mkdir()
+            (source / "Soup.md").write_text("# Soup", encoding="utf-8")
+            stdout = StringIO()
+
+            with redirect_stdout(stdout):
+                exit_code = main(["k8s", "push-local", str(source), "--namespace", "cronpot-local"])
+
+        self.assertEqual(exit_code, 0)
+        run.assert_any_call(["kubectl", "-n", "cronpot-local", "exec", "cronpot-api-123", "--", "mkdir", "-p", "/vault/docs"])
+        copy_commands = [call.args[0] for call in run.call_args_list if call.args[0][:4] == ["kubectl", "-n", "cronpot-local", "cp"]]
+        self.assertEqual(copy_commands[0][4], "docs/.")
+        self.assertEqual(copy_commands[0][5], "cronpot-api-123:/vault/docs")
+        self.assertIn("/vault/docs", stdout.getvalue())
+
+    def test_copy_local_vault_for_push_skips_runtime_queue(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "docs"
+            target = root / "staged"
+            (source / ".cronpot" / "jobs").mkdir(parents=True)
+            target.mkdir()
+            (source / ".cronpot" / "jobs" / "job.json").write_text("{}", encoding="utf-8")
+            (source / "Soup.md").write_text("# Soup", encoding="utf-8")
+
+            _copy_local_vault_for_push(source, target)
+
+            self.assertTrue((target / "Soup.md").exists())
+            self.assertFalse((target / ".cronpot").exists())
+
+    def test_k8s_push_local_can_clear_destination_first(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, patch("cronpot.cli._running_api_pod", return_value="cronpot-api-123"), patch("cronpot.cli._run") as run, patch(
+            "cronpot.cli._kubectl_output",
+            return_value="1",
+        ):
+            source = Path(temp_dir) / "recipes"
+            source.mkdir()
+            with redirect_stdout(StringIO()):
+                main(["k8s", "push-local", str(source), "--namespace", "cronpot-local", "--destination", "/vault/docs", "--clear"])
+
+        clear_commands = [call.args[0] for call in run.call_args_list if "find '/vault/docs'" in " ".join(call.args[0])]
+        self.assertEqual(len(clear_commands), 1)
+
+    def test_k8s_vault_destination_rejects_paths_outside_vault(self) -> None:
+        with self.assertRaisesRegex(ValueError, "below /vault"):
+            _k8s_vault_destination(Path("docs"), "/tmp/docs")
+
+    def test_k8s_github_pull_can_sync_back_after_pull(self) -> None:
+        with patch("cronpot.cli._run_github_sync_job") as run_job, patch("cronpot.cli._print_k8s_vault_summary") as summary, patch("cronpot.cli._sync_k8s_vault_back") as sync_back:
+            exit_code = main(["k8s", "github", "pull", "--namespace", "cronpot-local", "--sync-back", "docs", "--commit-sync-back"])
+
+        self.assertEqual(exit_code, 0)
+        run_job.assert_called_once_with("pull", "cronpot-local", "Sync CronPot vault from GitHub", 180, False)
+        summary.assert_called_once_with("cronpot-local")
+        sync_back.assert_called_once_with("docs", "cronpot-local", True, "Sync CronPot vault from Kubernetes")
 
     def test_normalise_ingredients_suggest_prints_aliases(self) -> None:
         stdout = StringIO()

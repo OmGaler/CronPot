@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import secrets
+import shutil
 import socket
+import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -153,6 +157,57 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument("--lan", action="store_true", help="Expose the mobile UI on the local network with a six digit pairing code.")
     start.add_argument("--auth-code", help="Use this pairing code instead of generating one. Intended for repeatable local testing.")
     start.set_defaults(func=cmd_serve)
+
+    k8s = subparsers.add_parser("k8s", aliases=["k"], help="Operate CronPot Kubernetes helpers.")
+    k8s_subparsers = k8s.add_subparsers(dest="k8s_command", required=True)
+
+    k8s_sync_back = k8s_subparsers.add_parser("sync-back", help="Copy the Kubernetes PVC vault back to a local folder.")
+    k8s_sync_back.add_argument("target", help="Local vault folder to update.")
+    k8s_sync_back.add_argument("--namespace", default="cronpot-local")
+    k8s_sync_back.add_argument("--commit", action="store_true", help="Commit the synced target when it is inside the current Git repo.")
+    k8s_sync_back.add_argument("--message", default="Sync CronPot vault from Kubernetes")
+    k8s_sync_back.set_defaults(func=cmd_k8s_sync_back)
+
+    k8s_push_local = k8s_subparsers.add_parser("push-local", help="Copy a local vault folder into the Kubernetes PVC.")
+    k8s_push_local.add_argument("source", help="Local vault folder to copy.")
+    k8s_push_local.add_argument("--namespace", default="cronpot-local")
+    k8s_push_local.add_argument("--destination", help="PVC destination path. Defaults to /vault/<source folder name>.")
+    k8s_push_local.add_argument("--clear", action="store_true", help="Clear the destination folder before copying.")
+    k8s_push_local.set_defaults(func=cmd_k8s_push_local)
+
+    k8s_github = k8s_subparsers.add_parser("github", help="Configure and run GitHub-backed vault sync.")
+    k8s_github_subparsers = k8s_github.add_subparsers(dest="github_command", required=True)
+
+    k8s_github_secret = k8s_github_subparsers.add_parser("secret", help="Create or update the GitHub vault sync Secret.")
+    k8s_github_secret.add_argument("--namespace", default="cronpot-local")
+    k8s_github_secret.add_argument("--repo", required=True, help="HTTPS GitHub repository URL for the vault.")
+    k8s_github_secret.add_argument("--branch", default="main")
+    k8s_github_secret.add_argument("--path", default=".", help="Path inside the repository that contains the vault.")
+    k8s_github_secret.add_argument("--username", default="x-access-token")
+    k8s_github_secret.add_argument("--author-name", default="CronPot")
+    k8s_github_secret.add_argument("--author-email", default="cronpot@example.local")
+    k8s_github_secret.add_argument(
+        "--allow-project-repo",
+        action="store_true",
+        help="Allow the CronPot source repository as the vault repository. This is usually unsafe.",
+    )
+    k8s_github_secret.set_defaults(func=cmd_k8s_github_secret)
+
+    k8s_github_pull = k8s_github_subparsers.add_parser("pull", help="Pull the GitHub vault repository into the Kubernetes PVC.")
+    k8s_github_pull.add_argument("--namespace", default="cronpot-local")
+    k8s_github_pull.add_argument("--timeout", type=int, default=180)
+    k8s_github_pull.add_argument("--keep-job", action="store_true")
+    k8s_github_pull.add_argument("--sync-back", metavar="TARGET", help="After pulling into Kubernetes, copy the PVC vault back to this local folder.")
+    k8s_github_pull.add_argument("--commit-sync-back", action="store_true", help="Commit the synced target after --sync-back.")
+    k8s_github_pull.add_argument("--sync-message", default="Sync CronPot vault from Kubernetes")
+    k8s_github_pull.set_defaults(func=cmd_k8s_github_pull)
+
+    k8s_github_push = k8s_github_subparsers.add_parser("push", help="Push the Kubernetes PVC vault back to GitHub.")
+    k8s_github_push.add_argument("--namespace", default="cronpot-local")
+    k8s_github_push.add_argument("--message", default="Sync CronPot vault from Kubernetes")
+    k8s_github_push.add_argument("--timeout", type=int, default=180)
+    k8s_github_push.add_argument("--keep-job", action="store_true")
+    k8s_github_push.set_defaults(func=cmd_k8s_github_push)
 
     return parser
 
@@ -382,7 +437,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     host = args.host
     port = args.port
-    pairing_code = _pairing_code(args) if args.lan or args.auth_code else ""
+    pairing_code = _pairing_code(args) if args.lan or args.auth_code or os.environ.get("CRONPOT_AUTH_CODE") else ""
     print(f"CronPot serving on http://{host}:{port}", flush=True)
     if pairing_code:
         print(f"CronPot mobile pairing code: {pairing_code}", flush=True)
@@ -392,12 +447,46 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_k8s_github_secret(args: argparse.Namespace) -> int:
+    token = os.environ.get("CRONPOT_GITHUB_TOKEN", "")
+    if not token:
+        raise ValueError("Set CRONPOT_GITHUB_TOKEN to a GitHub token that can read and write the vault repository.")
+    _validate_vault_repository(args.repo, args.allow_project_repo)
+    _run(["kubectl", "create", "namespace", args.namespace, "--dry-run=client", "-o", "yaml"], stdout_to_stdin=["kubectl", "apply", "-f", "-"])
+    _run_with_input(["kubectl", "apply", "-f", "-"], _github_secret_yaml(args, token))
+    print(f"Configured GitHub vault Secret cronpot-vault-github in namespace {args.namespace}.")
+    return 0
+
+
+def cmd_k8s_sync_back(args: argparse.Namespace) -> int:
+    _sync_k8s_vault_back(args.target, args.namespace, args.commit, args.message)
+    return 0
+
+
+def cmd_k8s_push_local(args: argparse.Namespace) -> int:
+    _push_local_vault_to_k8s(args.source, args.namespace, args.destination, args.clear)
+    return 0
+
+
+def cmd_k8s_github_pull(args: argparse.Namespace) -> int:
+    _run_github_sync_job("pull", args.namespace, "Sync CronPot vault from GitHub", args.timeout, args.keep_job)
+    _print_k8s_vault_summary(args.namespace)
+    if args.sync_back:
+        _sync_k8s_vault_back(args.sync_back, args.namespace, args.commit_sync_back, args.sync_message)
+    return 0
+
+
+def cmd_k8s_github_push(args: argparse.Namespace) -> int:
+    _run_github_sync_job("push", args.namespace, args.message, args.timeout, args.keep_job)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
         return args.func(args)
-    except (OSError, ValueError, LlmError) as exc:
+    except (OSError, ValueError, LlmError, subprocess.CalledProcessError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
 
@@ -461,12 +550,52 @@ def _default_export_path(recipes: list[tuple[Path, Recipe]], extension: str) -> 
 
 
 def _pairing_code(args: argparse.Namespace) -> str:
-    if args.auth_code:
-        code = re.sub(r"\D+", "", args.auth_code)
+    configured_code = args.auth_code or os.environ.get("CRONPOT_AUTH_CODE", "")
+    if configured_code:
+        code = re.sub(r"\D+", "", configured_code)
         if len(code) != 6:
-            raise ValueError("--auth-code must contain exactly six digits.")
+            raise ValueError("CronPot auth code must contain exactly six digits.")
         return code
     return f"{secrets.randbelow(1_000_000):06d}"
+
+
+def _validate_vault_repository(repo: str, allow_project_repo: bool) -> None:
+    if _repository_url_contains_credentials(repo):
+        raise ValueError("The vault repository URL must not contain credentials. Use CRONPOT_GITHUB_TOKEN or --token instead.")
+
+    project_repo = _git_remote_url("origin")
+    if not allow_project_repo and project_repo and _normalise_repository_url(repo) == _normalise_repository_url(project_repo):
+        raise ValueError(
+            "The vault repository matches this CronPot project repository. Use a separate recipe vault repository, "
+            "or pass --allow-project-repo only when that is intentional."
+        )
+
+
+def _repository_url_contains_credentials(repo: str) -> bool:
+    return bool(re.match(r"^[a-z][a-z0-9+.-]*://[^/@]+@", repo, flags=re.IGNORECASE))
+
+
+def _git_remote_url(name: str) -> str:
+    result = subprocess.run(
+        ["git", "remote", "get-url", name],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def _normalise_repository_url(repo: str) -> str:
+    value = repo.strip().rstrip("/")
+    if value.endswith(".git"):
+        value = value[:-4]
+    ssh_match = re.fullmatch(r"git@([^:]+):(.+)", value, flags=re.IGNORECASE)
+    if ssh_match:
+        return f"{ssh_match.group(1).casefold()}/{ssh_match.group(2).casefold()}"
+    https_match = re.fullmatch(r"https?://([^/]+)/(.+)", value, flags=re.IGNORECASE)
+    if https_match:
+        return f"{https_match.group(1).casefold()}/{https_match.group(2).casefold()}"
+    return value.casefold()
 
 
 def _local_network_addresses() -> list[str]:
@@ -480,3 +609,347 @@ def _local_network_addresses() -> list[str]:
     except OSError:
         return []
     return addresses
+
+
+def _run(command: list[str], stdout_to_stdin: list[str] | None = None, cwd: Path | str | None = None) -> subprocess.CompletedProcess[str]:
+    if stdout_to_stdin is None:
+        return subprocess.run(command, text=True, check=True, cwd=cwd)
+    first = subprocess.run(command, text=True, capture_output=True, check=True, cwd=cwd)
+    return subprocess.run(stdout_to_stdin, input=first.stdout, text=True, check=True, cwd=cwd)
+
+
+def _run_with_input(command: list[str], input_text: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(command, input=input_text, text=True, check=True)
+
+
+def _kubectl_output(command: list[str]) -> str:
+    return subprocess.run(command, text=True, capture_output=True, check=True).stdout.strip()
+
+
+def _running_api_pod(namespace: str) -> str:
+    pod = _kubectl_output(
+        [
+            "kubectl",
+            "-n",
+            namespace,
+            "get",
+            "pod",
+            "-l",
+            "app.kubernetes.io/component=api",
+            "-o",
+            "jsonpath={.items[?(@.status.phase=='Running')].metadata.name}",
+        ]
+    )
+    if not pod:
+        raise RuntimeError(f"No running CronPot API pod found in namespace {namespace}.")
+    return pod.split()[0]
+
+
+def _print_k8s_vault_summary(namespace: str) -> None:
+    pod = _running_api_pod(namespace)
+    top_level = _kubectl_output(["kubectl", "-n", namespace, "exec", pod, "--", "sh", "-c", "find /vault -maxdepth 1 -name '*.md' | wc -l"])
+    total = _kubectl_output(["kubectl", "-n", namespace, "exec", pod, "--", "sh", "-c", "find /vault -name '*.md' | wc -l"])
+    print(f"Kubernetes vault now has {top_level.strip()} top-level Markdown file(s) and {total.strip()} total Markdown file(s).")
+    if total.strip() != top_level.strip():
+        print("CronPot indexes nested Markdown recipes too; use the GitHub secret --path option only if you want the PVC rooted at a specific repository subfolder.")
+
+
+def _sync_k8s_vault_back(target: str, namespace: str, commit: bool, message: str) -> None:
+    pod = _running_api_pod(namespace)
+    target_path = Path(target)
+    target_path.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="cronpot-k8s-vault-") as temp_dir:
+        staging = Path(temp_dir) / "vault"
+        staging.mkdir()
+        _run(["kubectl", "-n", namespace, "cp", f"{pod}:/vault/.", "vault", "--container", "api"], cwd=temp_dir)
+        source = _sync_back_source(staging, target_path)
+        copied = _copy_synced_vault(source, target_path)
+    print(f"Synced {copied} file(s) from {namespace}/{pod}:/vault to {target_path}.")
+    if commit:
+        result = commit_paths(Path.cwd(), [target_path], message)
+        if result.committed:
+            print(result.output)
+        else:
+            print(f"Git commit skipped: {result.skipped_reason}")
+
+
+def _push_local_vault_to_k8s(source: str, namespace: str, destination: str | None, clear: bool) -> None:
+    pod = _running_api_pod(namespace)
+    source_path = Path(source)
+    if not source_path.is_dir():
+        raise FileNotFoundError(f"Source vault folder does not exist: {source}")
+    remote_path = _k8s_vault_destination(source_path, destination)
+    _run(["kubectl", "-n", namespace, "exec", pod, "--", "mkdir", "-p", remote_path])
+    if clear:
+        _run(
+            [
+                "kubectl",
+                "-n",
+                namespace,
+                "exec",
+                pod,
+                "--",
+                "sh",
+                "-c",
+                f"find {_sh_single_quote(remote_path)} -mindepth 1 -maxdepth 1 -exec rm -rf {{}} +",
+            ]
+        )
+    with tempfile.TemporaryDirectory(prefix="cronpot-local-vault-") as temp_dir:
+        staging = Path(temp_dir) / source_path.name
+        staging.mkdir()
+        _copy_local_vault_for_push(source_path, staging)
+        _run(["kubectl", "-n", namespace, "cp", f"{source_path.name}/.", f"{pod}:{remote_path}", "--container", "api"], cwd=temp_dir)
+    count = _kubectl_output(
+        [
+            "kubectl",
+            "-n",
+            namespace,
+            "exec",
+            pod,
+            "--",
+            "sh",
+            "-c",
+            f"find {_sh_single_quote(remote_path)} -maxdepth 1 -name '*.md' | wc -l",
+        ]
+    )
+    print(f"Pushed local {source_path} to {namespace}/{pod}:{remote_path} with {count.strip()} Markdown file(s).")
+
+
+def _copy_local_vault_for_push(source: Path, target: Path) -> None:
+    for entry in source.iterdir():
+        if entry.name == ".cronpot":
+            continue
+        destination = target / entry.name
+        if entry.is_dir():
+            shutil.copytree(entry, destination, dirs_exist_ok=True)
+        else:
+            shutil.copy2(entry, destination)
+
+
+def _k8s_vault_destination(source: Path, destination: str | None) -> str:
+    remote_path = destination or f"/vault/{source.name}"
+    if not remote_path.startswith("/vault/") and remote_path != "/vault":
+        raise ValueError("Kubernetes vault destination must be /vault or a path below /vault.")
+    return remote_path.rstrip("/") or "/vault"
+
+
+def _copy_synced_vault(source: Path, target: Path) -> int:
+    copied = 0
+    for entry in source.iterdir():
+        if entry.name == ".cronpot":
+            continue
+        destination = target / entry.name
+        if entry.is_dir():
+            shutil.copytree(entry, destination, dirs_exist_ok=True)
+            copied += sum(1 for path in entry.rglob("*") if path.is_file())
+        else:
+            shutil.copy2(entry, destination)
+            copied += 1
+    return copied
+
+
+def _sync_back_source(staging: Path, target: Path) -> Path:
+    nested = staging / target.name
+    has_top_level_recipes = any(path.is_file() and path.suffix.casefold() == ".md" for path in staging.iterdir())
+    if nested.is_dir() and not has_top_level_recipes:
+        print(f"Detected /vault/{target.name}; syncing that folder into {target} instead of creating {target / target.name}.")
+        return nested
+    return staging
+
+
+def _run_github_sync_job(direction: str, namespace: str, message: str, timeout_seconds: int, keep_job: bool) -> None:
+    job_name = f"cronpot-github-{direction}-{time.strftime('%Y%m%d%H%M%S')}"
+    yaml = _github_sync_job_yaml(job_name, namespace, direction, message)
+    _run_with_input(["kubectl", "apply", "-f", "-"], yaml)
+    try:
+        _run(["kubectl", "-n", namespace, "wait", "--for=condition=complete", f"job/{job_name}", f"--timeout={timeout_seconds}s"])
+        _run(["kubectl", "-n", namespace, "logs", f"job/{job_name}"])
+    except subprocess.CalledProcessError:
+        subprocess.run(
+            ["kubectl", "-n", namespace, "logs", f"job/{job_name}", "--all-containers=true", "--ignore-errors=true"],
+            text=True,
+            check=False,
+        )
+        raise
+    finally:
+        if not keep_job:
+            subprocess.run(["kubectl", "-n", namespace, "delete", "job", job_name, "--ignore-not-found"], text=True, check=False)
+
+
+def _github_secret_yaml(args: argparse.Namespace, token: str) -> str:
+    return f"""apiVersion: v1
+kind: Secret
+metadata:
+  name: cronpot-vault-github
+  namespace: {args.namespace}
+type: Opaque
+stringData:
+  repo: {_yaml_single_quote(args.repo)}
+  token: {_yaml_single_quote(token)}
+  branch: {_yaml_single_quote(args.branch)}
+  path: {_yaml_single_quote(args.path)}
+  username: {_yaml_single_quote(args.username)}
+  author_name: {_yaml_single_quote(args.author_name)}
+  author_email: {_yaml_single_quote(args.author_email)}
+"""
+
+
+def _github_sync_job_yaml(job_name: str, namespace: str, direction: str, message: str) -> str:
+    script = _github_pull_script() if direction == "pull" else _github_push_script()
+    script_block = _indent(script, 16)
+    return f"""apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {job_name}
+  namespace: {namespace}
+  labels:
+    app.kubernetes.io/name: cronpot
+    app.kubernetes.io/component: github-sync
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cronpot
+        app.kubernetes.io/component: github-sync
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: github-sync
+          image: alpine/git:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+{script_block}
+          env:
+            - name: GITHUB_REPO
+              valueFrom:
+                secretKeyRef:
+                  name: cronpot-vault-github
+                  key: repo
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: cronpot-vault-github
+                  key: token
+            - name: GITHUB_BRANCH
+              valueFrom:
+                secretKeyRef:
+                  name: cronpot-vault-github
+                  key: branch
+            - name: GITHUB_PATH
+              valueFrom:
+                secretKeyRef:
+                  name: cronpot-vault-github
+                  key: path
+            - name: GIT_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: cronpot-vault-github
+                  key: username
+            - name: GIT_AUTHOR_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: cronpot-vault-github
+                  key: author_name
+            - name: GIT_AUTHOR_EMAIL
+              valueFrom:
+                secretKeyRef:
+                  name: cronpot-vault-github
+                  key: author_email
+            - name: COMMIT_MESSAGE
+              value: {_yaml_single_quote(message)}
+          volumeMounts:
+            - name: vault
+              mountPath: /vault
+            - name: work
+              mountPath: /work
+      volumes:
+        - name: vault
+          persistentVolumeClaim:
+            claimName: cronpot-vault
+        - name: work
+          emptyDir: {{}}
+"""
+
+
+def _github_pull_script() -> str:
+    return """set -eu
+cat > /tmp/git-askpass <<'EOF'
+#!/bin/sh
+case "$1" in
+  *Username*) printf '%s\\n' "${GIT_USERNAME:-x-access-token}" ;;
+  *) printf '%s\\n' "$GITHUB_TOKEN" ;;
+esac
+EOF
+chmod 700 /tmp/git-askpass
+export GIT_ASKPASS=/tmp/git-askpass
+export GIT_TERMINAL_PROMPT=0
+
+git clone --depth 1 --branch "$GITHUB_BRANCH" "$GITHUB_REPO" /work/repo
+git config --global --add safe.directory /work/repo
+repo_path="/work/repo/$GITHUB_PATH"
+if [ ! -d "$repo_path" ]; then
+  echo "Repository path does not exist: $GITHUB_PATH" >&2
+  exit 1
+fi
+
+find /vault -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+mkdir -p /vault
+cp -a "$repo_path"/. /vault/
+rm -rf /vault/.git /vault/.cronpot
+echo "Pulled GitHub vault into /vault."
+"""
+
+
+def _github_push_script() -> str:
+    return """set -eu
+cat > /tmp/git-askpass <<'EOF'
+#!/bin/sh
+case "$1" in
+  *Username*) printf '%s\\n' "${GIT_USERNAME:-x-access-token}" ;;
+  *) printf '%s\\n' "$GITHUB_TOKEN" ;;
+esac
+EOF
+chmod 700 /tmp/git-askpass
+export GIT_ASKPASS=/tmp/git-askpass
+export GIT_TERMINAL_PROMPT=0
+
+git clone --depth 1 --branch "$GITHUB_BRANCH" "$GITHUB_REPO" /work/repo
+git config --global --add safe.directory /work/repo
+repo_path="/work/repo/$GITHUB_PATH"
+if [ ! -d "$repo_path" ]; then
+  mkdir -p "$repo_path"
+fi
+
+cp -a /vault/. "$repo_path"/
+rm -rf "$repo_path/.cronpot"
+
+git -C /work/repo config user.name "$GIT_AUTHOR_NAME"
+git -C /work/repo config user.email "$GIT_AUTHOR_EMAIL"
+if [ -z "$(git -C /work/repo status --short)" ]; then
+  echo "No GitHub vault changes to push."
+  exit 0
+fi
+
+git -C /work/repo add -A
+git -C /work/repo commit -m "$COMMIT_MESSAGE"
+git -C /work/repo push origin "HEAD:$GITHUB_BRANCH"
+echo "Pushed Kubernetes vault to GitHub."
+"""
+
+
+def _indent(value: str, spaces: int) -> str:
+    prefix = " " * spaces
+    return "\n".join(f"{prefix}{line}" if line else prefix for line in value.rstrip().splitlines())
+
+
+def _yaml_single_quote(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _sh_single_quote(value: str) -> str:
+    return "'" + value.replace("'", "'\"'\"'") + "'"

@@ -25,6 +25,12 @@ spec:
               value: "1"
             - name: PYTHONUNBUFFERED
               value: "1"
+            - name: CRONPOT_AUTH_CODE
+              valueFrom:
+                secretKeyRef:
+                  name: cronpot-local-auth
+                  key: code
+                  optional: true
           volumeMounts:
             - name: source
               mountPath: /app/cronpot
