@@ -27,6 +27,19 @@ CronPot uses plain Kubernetes manifests with Kustomize overlays. Helm is not req
 
 Only `local` is started by the helper scripts. `dev`, `staging`, and `production` are intended for CI/CD or explicit deploy commands.
 
+## Deployment Ladder
+
+Treat the overlays as a learning sequence:
+
+1. `local` runs on your laptop through Docker Desktop. It is the fast feedback loop and is never deployed by GitHub Actions.
+2. `dev` proves that the image built by CI works in Kubernetes. A `master` push deploys it when `KUBE_CONFIG_DEV` exists, or it can be selected manually in the `CI/CD` workflow.
+3. `staging` rehearses the release in its own namespace. It is manual-only.
+4. `production` is the real deployment. It is manual-only.
+
+To walk the complete path, run `scripts\k8s-start.cmd docs` locally, then use GitHub Actions to run `CI/CD` three times: `dev`, then `staging`, then `production`. Configure the matching `KUBE_CONFIG_*` secret for each environment first. A single remote cluster may serve all three namespaces with the same kubeconfig; separate secrets make the intended boundary clear.
+
+GitHub-hosted Actions runners cannot use a Docker Desktop kubeconfig that points to `127.0.0.1`. CI deployment requires a remote cluster reachable by GitHub or a self-hosted runner that can reach the cluster.
+
 ## Local Start
 
 Start the local cluster flow and seed the PVC from `docs`:
@@ -276,7 +289,7 @@ Required secrets:
 - `KUBE_CONFIG_STAGING`
 - `KUBE_CONFIG_PRODUCTION`
 
-Pushes to `master` deploy `dev` automatically when `KUBE_CONFIG_DEV` exists. `staging` and `production` deploy through workflow dispatch.
+Pushes to `master` deploy `dev` automatically when `KUBE_CONFIG_DEV` exists. `staging` and `production` deploy through workflow dispatch. Before any remote deployment is configured, CI still renders and client-validates all four overlays, checks their namespace/image/storage contracts, builds the container image, and calls its health endpoints.
 
 ## Troubleshooting
 

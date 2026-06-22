@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import shutil
 import tempfile
 from collections.abc import Iterable
 from collections import Counter
@@ -180,6 +181,10 @@ def _pdf_browser_path() -> Path | None:
     for candidate in candidates:
         if candidate.exists():
             return candidate
+    for command in ("microsoft-edge", "google-chrome", "google-chrome-stable", "chromium", "chromium-browser"):
+        found = shutil.which(command)
+        if found:
+            return Path(found)
     return None
 
 

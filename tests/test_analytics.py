@@ -3,8 +3,9 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from cronpot.analytics import analyse_vault, build_shopping_list, html_cookbook, pdf_cookbook
+from cronpot.analytics import _pdf_browser_path, analyse_vault, build_shopping_list, html_cookbook, pdf_cookbook
 from cronpot.models import Recipe
 from cronpot.vault import write_recipe_to_vault
 
@@ -152,6 +153,14 @@ class AnalyticsTests(unittest.TestCase):
 
         self.assertTrue(output.startswith(b"%PDF-"))
         self.assertTrue(output.rstrip().endswith(b"%%EOF"))
+
+    def test_finds_linux_browser_for_pdf_export(self) -> None:
+        with patch("cronpot.analytics.Path.exists", return_value=False), patch(
+            "cronpot.analytics.shutil.which", side_effect=lambda command: "/usr/bin/google-chrome" if command == "google-chrome" else None
+        ):
+            browser = _pdf_browser_path()
+
+        self.assertEqual(browser, Path("/usr/bin/google-chrome"))
 
 
 if __name__ == "__main__":

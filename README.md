@@ -270,7 +270,7 @@ The smoke check covers seed, API health, analytics, queued ingest, worker comple
 
 ## CI/CD
 
-`.github/workflows/ci-cd.yml` compiles Python modules, runs unit tests, renders all Kubernetes overlays, builds a Docker image, publishes it to GHCR on non-PR runs, and deploys when the matching kubeconfig secret is configured.
+`.github/workflows/ci-cd.yml` compiles Python modules, runs unit tests, renders and client-validates every Kubernetes overlay, checks each overlay's namespace/image/storage contract, builds the container, and smoke-tests its health endpoints. It publishes to GHCR on non-PR runs and deploys only when the matching kubeconfig secret is configured.
 
 Secrets:
 
@@ -279,6 +279,21 @@ Secrets:
 - `KUBE_CONFIG_PRODUCTION` deploys `production`
 
 Pushes to `master` deploy `dev` automatically when `KUBE_CONFIG_DEV` exists. `staging` and `production` deploy through the manual GitHub Actions workflow dispatch.
+
+### Deployment ladder
+
+Use the environments as a progression, rather than four copies of the same deployment:
+
+| Step | Where it runs | Purpose | How to run it |
+| --- | --- | --- | --- |
+| `local` | Your laptop and Docker Desktop | Learn the resources and iterate on code quickly. | `scripts\k8s-start.cmd docs` |
+| `dev` | A cluster reachable by the CI runner | Verify that the image built by CI works as a deployment. | Push to `master`, or run `CI/CD` manually with `dev`. |
+| `staging` | A separate namespace or cluster | Rehearse a release without touching the live service. | Run `CI/CD` manually with `staging`. |
+| `production` | The live namespace or cluster | Deploy the version you intend to use. | Run `CI/CD` manually with `production`. |
+
+To exercise the complete path, start `local` on your laptop, then run the `CI/CD` workflow three times from GitHub Actions: select `dev`, verify it, select `staging`, verify it, then select `production`. Each deployment needs its matching `KUBE_CONFIG_*` secret. The three secrets may contain the same kubeconfig when one cluster hosts all three namespaces, but keeping them separate makes the boundary visible and lets you split clusters later.
+
+GitHub-hosted runners cannot reach Docker Desktop on your laptop: a kubeconfig that points at `127.0.0.1` only works locally. For CI deployment, use a remotely reachable cluster or a self-hosted GitHub Actions runner on the machine that can reach the cluster.
 
 ## Tests
 

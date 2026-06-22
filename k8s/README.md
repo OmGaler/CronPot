@@ -56,6 +56,19 @@ Practical differences:
 
 Each environment currently runs one API replica. The vault is a writable PVC, so multi-replica scaling should wait until we introduce RWX storage or move mutable state into a database/object store. That limitation is useful here: it keeps the stateful part honest instead of pretending a file-backed app can be horizontally scaled without a storage decision.
 
+## Deployment Ladder
+
+Use the environments in this order:
+
+1. `local`: run `scripts\k8s-start.cmd docs` on the laptop. This teaches the resource layout and gives the quickest edit-test loop.
+2. `dev`: deploy the image produced by CI to prove the container artefact works in Kubernetes.
+3. `staging`: deploy the same artefact deliberately as a release rehearsal.
+4. `production`: deploy only after the staging verification is satisfactory.
+
+`local` is intentionally outside GitHub Actions because it depends on Docker Desktop and a local vault. CI still renders and client-validates all four overlays, checks their namespace/image/storage contracts, builds the container, and calls its health endpoints. To exercise the deployable part of the ladder, open GitHub Actions, choose `CI/CD`, select **Run workflow**, and run `dev`, `staging`, and `production` in that order. `dev` can also deploy automatically on a `master` push when `KUBE_CONFIG_DEV` is configured.
+
+Each deployable environment needs a repository secret containing a kubeconfig: `KUBE_CONFIG_DEV`, `KUBE_CONFIG_STAGING`, or `KUBE_CONFIG_PRODUCTION`. One remote cluster can host all three namespaces, in which case the same kubeconfig can be stored in all three secrets. A Docker Desktop kubeconfig that points at `127.0.0.1` cannot work from GitHub-hosted Actions; use a reachable remote cluster or a self-hosted runner.
+
 ## Local Flow
 
 The local overlay runs from `python:3.12-slim` and mounts the local source files through a ConfigMap. This avoids the Docker Desktop multi-node image-loading problem where a locally built image is visible to Docker but not to Kubernetes.
