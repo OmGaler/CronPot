@@ -289,7 +289,7 @@ Required secrets:
 - `KUBE_CONFIG_STAGING`
 - `KUBE_CONFIG_PRODUCTION`
 
-Pushes to `master` deploy `dev` automatically when `KUBE_CONFIG_DEV` exists. `staging` and `production` deploy through workflow dispatch. Before any remote deployment is configured, CI still renders and client-validates all four overlays, checks their namespace/image/storage contracts, builds the container image, and calls its health endpoints.
+Pushes to `master` deploy `dev` automatically when `KUBE_CONFIG_DEV` exists. `staging` and `production` deploy through workflow dispatch. Before any remote deployment is configured, CI still renders all four overlays, checks their namespace/image/storage contracts, builds the container image, and calls its health endpoints.
 
 ## Troubleshooting
 

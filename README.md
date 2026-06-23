@@ -270,7 +270,7 @@ The smoke check covers seed, API health, analytics, queued ingest, worker comple
 
 ## CI/CD
 
-`.github/workflows/ci-cd.yml` compiles Python modules, runs unit tests, renders and client-validates every Kubernetes overlay, checks each overlay's namespace/image/storage contract, builds the container, and smoke-tests its health endpoints. It publishes to GHCR on non-PR runs and deploys only when the matching kubeconfig secret is configured.
+`.github/workflows/ci-cd.yml` compiles Python modules, runs unit tests, renders every Kubernetes overlay, checks each overlay's namespace/image/storage contract, builds the container, and smoke-tests its health endpoints. It publishes to GHCR on non-PR runs and deploys only when the matching kubeconfig secret is configured.
 
 Secrets:
 

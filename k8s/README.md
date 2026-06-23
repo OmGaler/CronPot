@@ -65,7 +65,7 @@ Use the environments in this order:
 3. `staging`: deploy the same artefact deliberately as a release rehearsal.
 4. `production`: deploy only after the staging verification is satisfactory.
 
-`local` is intentionally outside GitHub Actions because it depends on Docker Desktop and a local vault. CI still renders and client-validates all four overlays, checks their namespace/image/storage contracts, builds the container, and calls its health endpoints. To exercise the deployable part of the ladder, open GitHub Actions, choose `CI/CD`, select **Run workflow**, and run `dev`, `staging`, and `production` in that order. `dev` can also deploy automatically on a `master` push when `KUBE_CONFIG_DEV` is configured.
+`local` is intentionally outside GitHub Actions because it depends on Docker Desktop and a local vault. CI still renders all four overlays, checks their namespace/image/storage contracts, builds the container, and calls its health endpoints. To exercise the deployable part of the ladder, open GitHub Actions, choose `CI/CD`, select **Run workflow**, and run `dev`, `staging`, and `production` in that order. `dev` can also deploy automatically on a `master` push when `KUBE_CONFIG_DEV` is configured.
 
 Each deployable environment needs a repository secret containing a kubeconfig: `KUBE_CONFIG_DEV`, `KUBE_CONFIG_STAGING`, or `KUBE_CONFIG_PRODUCTION`. One remote cluster can host all three namespaces, in which case the same kubeconfig can be stored in all three secrets. A Docker Desktop kubeconfig that points at `127.0.0.1` cannot work from GitHub-hosted Actions; use a reachable remote cluster or a self-hosted runner.
 

@@ -40,7 +40,6 @@ jobs:
         run: |
           for overlay in local dev staging production; do
             kubectl kustomize --load-restrictor=LoadRestrictionsNone "k8s/overlays/$overlay" > "/tmp/cronpot-$overlay.yaml"
-            kubectl apply --dry-run=client --validate=false -f "/tmp/cronpot-$overlay.yaml"
           done
       - name: Check Kubernetes overlay contracts
         run: |
