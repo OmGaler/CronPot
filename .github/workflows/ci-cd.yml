@@ -75,8 +75,19 @@ jobs:
         run: |
           docker run --detach --name cronpot-smoke --tmpfs /vault:mode=755 --publish 127.0.0.1:18080:8080 "$IMAGE:${{ github.sha }}"
           trap 'docker logs cronpot-smoke; docker rm --force cronpot-smoke' EXIT
-          curl --fail --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:18080/healthz
-          curl --fail --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:18080/readyz
+          wait_for_endpoint() {
+            local endpoint="$1"
+            for attempt in $(seq 1 20); do
+              if curl --fail --silent --show-error --max-time 2 "$endpoint"; then
+                return 0
+              fi
+              sleep 1
+            done
+            echo "Timed out waiting for $endpoint" >&2
+            return 1
+          }
+          wait_for_endpoint http://127.0.0.1:18080/healthz
+          wait_for_endpoint http://127.0.0.1:18080/readyz
       - name: Push image
         if: github.event_name != 'pull_request'
         run: |
