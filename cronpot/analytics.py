@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import shutil
@@ -145,19 +146,7 @@ def pdf_cookbook(recipes: list[tuple[Path, Recipe]], title: str = "CronPot Cookb
         html_path.write_text(html_cookbook(recipes, title), encoding="utf-8", newline="\n")
         try:
             result = subprocess.run(
-                [
-                    str(browser),
-                    "--headless",
-                    "--disable-gpu",
-                    "--disable-background-networking",
-                    "--disable-extensions",
-                    "--no-first-run",
-                    "--no-default-browser-check",
-                    "--no-pdf-header-footer",
-                    f"--user-data-dir={profile_path}",
-                    f"--print-to-pdf={pdf_path}",
-                    html_path.as_uri(),
-                ],
+                _pdf_browser_arguments(browser, profile_path, pdf_path, html_path),
                 text=True,
                 capture_output=True,
                 check=False,
@@ -186,6 +175,27 @@ def _pdf_browser_path() -> Path | None:
         if found:
             return Path(found)
     return None
+
+
+def _pdf_browser_arguments(browser: Path, profile_path: Path, pdf_path: Path, html_path: Path) -> list[str]:
+    arguments = [
+        str(browser),
+        "--headless",
+        "--disable-gpu",
+        "--disable-background-networking",
+        "--disable-extensions",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--no-pdf-header-footer",
+    ]
+    if os.environ.get("CRONPOT_PDF_NO_SANDBOX") == "1":
+        arguments.append("--no-sandbox")
+    return [
+        *arguments,
+        f"--user-data-dir={profile_path}",
+        f"--print-to-pdf={pdf_path}",
+        html_path.as_uri(),
+    ]
 
 
 def _html_recipe(path: Path, recipe: Recipe) -> str:

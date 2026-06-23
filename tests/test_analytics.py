@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from cronpot.analytics import _pdf_browser_path, analyse_vault, build_shopping_list, html_cookbook, pdf_cookbook
+from cronpot.analytics import _pdf_browser_arguments, _pdf_browser_path, analyse_vault, build_shopping_list, html_cookbook, pdf_cookbook
 from cronpot.models import Recipe
 from cronpot.vault import write_recipe_to_vault
 
@@ -161,6 +162,21 @@ class AnalyticsTests(unittest.TestCase):
             browser = _pdf_browser_path()
 
         self.assertEqual(browser, Path("/usr/bin/google-chrome"))
+
+    def test_pdf_sandbox_bypass_requires_explicit_environment_setting(self) -> None:
+        browser = Path("/usr/bin/google-chrome")
+        temp_path = Path(tempfile.gettempdir()).resolve()
+        profile = temp_path / "profile"
+        output = temp_path / "cookbook.pdf"
+        html = temp_path / "cookbook.html"
+
+        with patch.dict(os.environ, {}, clear=True):
+            default_arguments = _pdf_browser_arguments(browser, profile, output, html)
+        with patch.dict(os.environ, {"CRONPOT_PDF_NO_SANDBOX": "1"}, clear=True):
+            ci_arguments = _pdf_browser_arguments(browser, profile, output, html)
+
+        self.assertNotIn("--no-sandbox", default_arguments)
+        self.assertIn("--no-sandbox", ci_arguments)
 
 
 if __name__ == "__main__":

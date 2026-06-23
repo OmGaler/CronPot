@@ -158,7 +158,7 @@ Set `auto_normalise_ingredients = true` to let `cronpot analytics` and the dashb
 
 Set `rewrite_ingested_recipes = true` to let `cronpot ingest` and the HTTP `/ingest` endpoint ask the configured local LLM to rewrite extracted web recipes to match existing vault examples. CronPot still performs deterministic extraction and normalisation first, and it fails the ingest if the configured LLM cannot return valid recipe JSON.
 
-PDF export prints the rendered HTML cookbook through Microsoft Edge or Chrome, so it follows the HTML export styling and requires one of those browsers locally.
+PDF export prints the rendered HTML cookbook through Microsoft Edge or Chrome, so it follows the HTML export styling and requires one of those browsers locally. In a restricted Linux CI environment where Chromium's sandbox cannot start, set `CRONPOT_PDF_NO_SANDBOX=1`; CronPot uses this only when the setting is explicit.
 
 ## Kubernetes
 
