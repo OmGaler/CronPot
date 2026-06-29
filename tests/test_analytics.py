@@ -130,6 +130,7 @@ class AnalyticsTests(unittest.TestCase):
 
         self.assertIn("<!doctype html>", output)
         self.assertIn("<title>Friday &lt;Dinner&gt;</title>", output)
+        self.assertIn('alt="CronPot logo"', output)
         self.assertIn("<h2>Fish &amp; Chips</h2>", output)
         self.assertIn("<li>1 &lt;large&gt; fish</li>", output)
         self.assertIn("Oil &amp; salt", output)

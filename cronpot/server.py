@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import secrets
+import subprocess
+import sys
 import time
 from html import escape
 from http import HTTPStatus
@@ -14,7 +17,7 @@ from cronpot.analytics import analyse_vault, build_shopping_list, html_cookbook
 from cronpot.config import AutomationConfig
 from cronpot.extraction import fetch_html
 from cronpot.ingest import prepare_ingested_recipe
-from cronpot.jobs import enqueue_ingest_job, get_job, job_to_dict, list_jobs, retry_job, run_pending_jobs
+from cronpot.jobs import clear_jobs, enqueue_ingest_job, get_job, job_to_dict, list_jobs, retry_job, run_pending_jobs
 from cronpot.llm import LlmError, suggest_ingredient_alias_map
 from cronpot.models import Recipe
 from cronpot.vault import load_recipes, write_recipe_to_vault
@@ -22,6 +25,8 @@ from cronpot.vault import load_recipes, write_recipe_to_vault
 
 BAR_COLOURS = ["#2f6f4f", "#b86b3d", "#3d6fb8", "#8a6f2f", "#7a4f9e", "#a64f65", "#4f7f83", "#6f7840"]
 LLM_ALIAS_CACHE_SECONDS = 900
+ASSET_DIR = Path(__file__).resolve().parent.parent / "assets"
+LOGO_PATH = ASSET_DIR / "cronpot-logo.svg"
 _llm_alias_cache: dict[tuple[str, str, str, int], tuple[float, dict[str, str]]] = {}
 
 
@@ -36,6 +41,9 @@ class CronPotHandler(BaseHTTPRequestHandler):
         path = request.path.rstrip("/") or "/"
         query = parse_qs(request.query)
 
+        if path in {"/assets/cronpot-logo.svg", "/favicon.svg", "/favicon.ico"}:
+            self._send_static_asset(LOGO_PATH, "image/svg+xml")
+            return
         if path == "/mobile":
             self._send_html(_mobile_html(self._is_authorised()))
             return
@@ -153,6 +161,13 @@ class CronPotHandler(BaseHTTPRequestHandler):
             processed = run_pending_jobs(self.vault_path, self.config, workers=self.config.worker_count)
             self._send_json({"jobs": [job_to_dict(job) for job in processed]})
             return
+        if path == "/jobs/clear":
+            cleared = clear_jobs(self.vault_path)
+            self._send_json({"cleared": cleared, "jobs": []})
+            return
+        if path in {"/k8s/github/pull", "/k8s/github/push"}:
+            self._run_mobile_k8s_sync(path.rsplit("/", 1)[-1])
+            return
         if path.startswith("/jobs/") and path.endswith("/retry"):
             job_id = unquote(path.removeprefix("/jobs/").removesuffix("/retry")).strip()
             try:
@@ -223,6 +238,56 @@ class CronPotHandler(BaseHTTPRequestHandler):
             self.send_header(name, value)
         self.end_headers()
         self.wfile.write(encoded)
+
+    def _send_static_asset(self, path: Path, content_type: str) -> None:
+        if not path.exists() or not path.is_file():
+            self._send_json({"error": "asset not found"}, status=HTTPStatus.NOT_FOUND)
+            return
+        payload = path.read_bytes()
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Cache-Control", "public, max-age=86400")
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def _run_mobile_k8s_sync(self, direction: str) -> None:
+        namespace = os.environ.get("CRONPOT_K8S_NAMESPACE", "cronpot-local")
+        command = [sys.executable, "-m", "cronpot", "k8s", "github", direction, "--namespace", namespace]
+        if direction == "push":
+            command.extend(["--seed-from", str(self.vault_path)])
+        try:
+            result = subprocess.run(command, text=True, capture_output=True, check=False, timeout=240)
+        except subprocess.TimeoutExpired:
+            self._send_json(
+                {
+                    "error": f"Kubernetes GitHub {direction} timed out. Check that the local cluster is running and the namespace exists.",
+                    "namespace": namespace,
+                },
+                status=HTTPStatus.GATEWAY_TIMEOUT,
+            )
+            return
+        except OSError as exc:
+            self._send_json(
+                {
+                    "error": f"Could not run Kubernetes GitHub {direction}: {exc}",
+                    "namespace": namespace,
+                },
+                status=HTTPStatus.BAD_GATEWAY,
+            )
+            return
+        output = "\n".join(part.strip() for part in (result.stdout, result.stderr) if part.strip())
+        if result.returncode != 0:
+            self._send_json(
+                {
+                    "error": _mobile_k8s_error(direction, namespace, output),
+                    "namespace": namespace,
+                    "output": output,
+                },
+                status=HTTPStatus.BAD_GATEWAY,
+            )
+            return
+        self._send_json({"status": "complete", "direction": direction, "namespace": namespace, "output": output})
 
     def _wants_html(self) -> bool:
         accept = self.headers.get("Accept", "")
@@ -349,13 +414,15 @@ def _mobile_html(authorised: bool) -> str:
             "<head>",
             '  <meta charset="utf-8">',
             '  <meta name="viewport" content="width=device-width, initial-scale=1">',
+            '  <link rel="icon" href="/favicon.svg" type="image/svg+xml">',
             "  <title>CronPot Mobile</title>",
             "  <style>",
             "    :root { color-scheme: light; --ink: #20241f; --muted: #626b60; --line: #d8ddd2; --surface: #f7f6ef; --panel: #ffffff; --accent: #2f6f4f; --danger: #9e3f3f; }",
             "    * { box-sizing: border-box; }",
             "    body { margin: 0; background: var(--surface); color: var(--ink); font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; line-height: 1.45; }",
             "    main { max-width: 780px; margin: 0 auto; padding: 22px 16px 42px; }",
-            "    header { border-bottom: 1px solid var(--line); padding-bottom: 16px; margin-bottom: 18px; }",
+            "    header { display: flex; align-items: center; gap: 14px; border-bottom: 1px solid var(--line); padding-bottom: 16px; margin-bottom: 18px; }",
+            "    .logo { width: 52px; height: 52px; object-fit: contain; flex: 0 0 auto; }",
             "    h1 { font-size: 30px; line-height: 1.05; margin: 0 0 8px; }",
             "    h2 { font-size: 18px; margin: 0 0 10px; }",
             "    p { margin: 0; }",
@@ -368,10 +435,18 @@ def _mobile_html(authorised: bool) -> str:
             "    .row { display: grid; gap: 10px; }",
             "    .status { min-height: 22px; color: var(--muted); margin-top: 8px; }",
             "    .error { color: var(--danger); }",
-            "    .jobs, .items, .recipes { display: grid; gap: 8px; margin-top: 10px; }",
-            "    .job, .item, .recipe { background: var(--panel); border: 1px solid var(--line); padding: 10px 12px; }",
+            "    .success { color: var(--accent); }",
+            "    .jobs, .items, .recipes, .tips { display: grid; gap: 8px; margin-top: 10px; }",
+            "    .job, .item, .recipe, details { background: var(--panel); border: 1px solid var(--line); padding: 10px 12px; }",
+            "    .job { display: grid; grid-template-columns: minmax(0, 1fr) 42px; gap: 10px; align-items: center; }",
+            "    .job.no-action { grid-template-columns: 1fr; }",
+            "    .job-title { overflow-wrap: anywhere; }",
+            "    .icon-button { width: 40px; min-height: 40px; padding: 8px; display: inline-flex; align-items: center; justify-content: center; }",
+            "    .icon-button svg { width: 18px; height: 18px; display: block; }",
             "    .recipe { display: grid; grid-template-columns: 24px 1fr; gap: 8px; align-items: start; }",
             "    .recipe input { min-height: 22px; width: 22px; padding: 0; margin-top: 2px; }",
+            "    summary { cursor: pointer; font-weight: 700; }",
+            "    code { background: #eef1e7; padding: 1px 4px; }",
             "    .muted { color: var(--muted); }",
             "    .toolbar { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }",
             "    @media (min-width: 680px) { .row.two { grid-template-columns: 1fr auto; align-items: end; } .row.two button { width: auto; min-width: 140px; } }",
@@ -380,8 +455,11 @@ def _mobile_html(authorised: bool) -> str:
             "<body>",
             "  <main>",
             "    <header>",
-            "      <h1>CronPot</h1>",
-            "      <p class=\"muted\">Mobile tools for ingest jobs and shopping lists.</p>",
+            "      <img class=\"logo\" src=\"/assets/cronpot-logo.svg\" alt=\"CronPot logo\">",
+            "      <div>",
+            "        <h1>CronPot</h1>",
+            "        <p class=\"muted\">Mobile tools for ingest jobs and shopping lists.</p>",
+            "      </div>",
             "    </header>",
             f"    <section id=\"auth\" style=\"display: {auth_display};\">",
             "      <h2>Pair this device</h2>",
@@ -401,7 +479,13 @@ def _mobile_html(authorised: bool) -> str:
             "        <p id=\"ingestStatus\" class=\"status\"></p>",
             "      </section>",
             "      <section>",
+            "        <h2>Vault sync</h2>",
+            "        <div class=\"toolbar\"><button id=\"pullVault\">Pull vault</button><button id=\"pushVault\" class=\"secondary\">Push vault</button></div>",
+            "        <p id=\"syncStatus\" class=\"status\">Uses Kubernetes namespace cronpot-local unless CRONPOT_K8S_NAMESPACE is set.</p>",
+            "      </section>",
+            "      <section>",
             "        <h2>Recent jobs</h2>",
+            "        <div class=\"toolbar\"><button id=\"runJobs\">Run jobs</button><button id=\"clearJobs\" class=\"secondary\">Clear jobs</button></div>",
             "        <button id=\"refreshJobs\" class=\"secondary\">Refresh jobs</button>",
             "        <div id=\"jobs\" class=\"jobs\"><p class=\"muted\">No jobs loaded.</p></div>",
             "      </section>",
@@ -416,6 +500,15 @@ def _mobile_html(authorised: bool) -> str:
             "      </section>",
             "      <section>",
             "        <p><a href=\"/dashboard\">Open dashboard</a></p>",
+            "      </section>",
+            "      <section>",
+            "        <h2>Command tips</h2>",
+            "        <div class=\"tips\">",
+            "          <details><summary>Start local mobile access</summary><p class=\"muted\"><code>cronpot start --vault docs --lan</code> starts the dashboard, prints a pairing code, and exposes <code>/mobile</code> on your local network.</p></details>",
+            "          <details><summary>Import a recipe URL</summary><p class=\"muted\"><code>cronpot ingest URL --vault docs</code> extracts, normalises, and optionally rewrites a web recipe before writing Markdown.</p></details>",
+            "          <details><summary>Run queued jobs</summary><p class=\"muted\"><code>cronpot jobs run --vault docs</code> processes queued ingest work that was created from the mobile UI or API.</p></details>",
+            "          <details><summary>Sync the Kubernetes vault</summary><p class=\"muted\"><code>cronpot k8s github pull</code> brings the backing vault repo into Kubernetes. <code>cronpot k8s github push</code> writes Kubernetes vault changes back to that repo.</p></details>",
+            "        </div>",
             "      </section>",
             "    </div>",
             "  </main>",
@@ -448,10 +541,41 @@ def _mobile_html(authorised: bool) -> str:
             "        await loadJobs();",
             "      } catch (error) { $('ingestStatus').innerHTML = '<span class=\"error\">' + error.message + '</span>'; }",
             "    }",
+            "    async function syncVault(direction) {",
+            "      $('syncStatus').textContent = (direction === 'pull' ? 'Pulling' : 'Pushing') + ' vault via Kubernetes...';",
+            "      try {",
+            "        const result = await request('/k8s/github/' + direction, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });",
+            "        const summary = result.output ? result.output.split('\\n').slice(-2).join(' ') : 'Sync complete.';",
+            "        $('syncStatus').innerHTML = '<span class=\"success\">' + escapeHtml(summary) + '</span>';",
+            "        await Promise.all([loadRecipes(), loadJobs()]);",
+            "      } catch (error) {",
+            "        $('syncStatus').innerHTML = '<span class=\"error\">' + escapeHtml(error.message) + '</span>';",
+            "      }",
+            "    }",
+            "    async function runJobs() {",
+            "      $('jobs').innerHTML = '<p class=\"muted\">Running queued jobs...</p>';",
+            "      try {",
+            "        const result = await request('/jobs/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });",
+            "        await loadJobs();",
+            "        $('jobs').insertAdjacentHTML('afterbegin', '<p class=\"success\">Processed ' + result.jobs.length + ' job' + (result.jobs.length === 1 ? '' : 's') + '.</p>');",
+            "      } catch (error) { $('jobs').innerHTML = '<p class=\"error\">' + escapeHtml(error.message) + '</p>'; }",
+            "    }",
+            "    async function clearQueuedJobs() {",
+            "      try {",
+            "        const result = await request('/jobs/clear', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });",
+            "        $('jobs').innerHTML = '<p class=\"muted\">Cleared ' + result.cleared + ' job' + (result.cleared === 1 ? '' : 's') + '.</p>';",
+            "      } catch (error) { $('jobs').innerHTML = '<p class=\"error\">' + escapeHtml(error.message) + '</p>'; }",
+            "    }",
+            "    async function retryJob(jobId) {",
+            "      try {",
+            "        await request('/jobs/' + encodeURIComponent(jobId) + '/retry', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });",
+            "        await loadJobs();",
+            "      } catch (error) { $('jobs').insertAdjacentHTML('afterbegin', '<p class=\"error\">' + escapeHtml(error.message) + '</p>'); }",
+            "    }",
             "    async function loadJobs() {",
             "      const data = await request('/jobs');",
             "      const jobs = data.jobs.slice().sort((a, b) => b.updated_at - a.updated_at).slice(0, 8);",
-            "      $('jobs').innerHTML = jobs.length ? jobs.map(job => '<div class=\"job\"><strong>' + job.status + '</strong><br><span>' + escapeHtml(job.title || job.url || job.id) + '</span><br><span class=\"muted\">Attempts: ' + job.attempts + '</span></div>').join('') : '<p class=\"muted\">No queued jobs.</p>';",
+            "      $('jobs').innerHTML = jobs.length ? jobs.map(job => { const retry = job.status === 'failed' || job.status === 'running'; return '<div class=\"job ' + (retry ? '' : 'no-action') + '\"><div class=\"job-title\"><strong>' + job.status + '</strong><br><span>' + escapeHtml(job.title || job.url || job.id) + '</span><br><span class=\"muted\">Attempts: ' + job.attempts + '</span></div>' + (retry ? '<button class=\"secondary icon-button retry-job\" data-job-id=\"' + escapeAttr(job.id) + '\" title=\"Retry job\" aria-label=\"Retry job\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M20 11a8 8 0 1 0-2.34 5.66\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\"/><path d=\"M20 4v7h-7\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/></svg></button>' : '') + '</div>'; }).join('') : '<p class=\"muted\">No queued jobs.</p>';",
             "    }",
             "    async function loadRecipes() {",
             "      const data = await request('/recipes');",
@@ -481,7 +605,12 @@ def _mobile_html(authorised: bool) -> str:
             "    $('pair').addEventListener('click', pair);",
             "    $('code').addEventListener('keydown', event => { if (event.key === 'Enter') pair(); });",
             "    $('queue').addEventListener('click', queueIngest);",
+            "    $('pullVault').addEventListener('click', () => syncVault('pull'));",
+            "    $('pushVault').addEventListener('click', () => syncVault('push'));",
+            "    $('runJobs').addEventListener('click', runJobs);",
+            "    $('clearJobs').addEventListener('click', clearQueuedJobs);",
             "    $('refreshJobs').addEventListener('click', loadJobs);",
+            "    $('jobs').addEventListener('click', event => { const button = event.target.closest('.retry-job'); if (button) retryJob(button.dataset.jobId); });",
             "    $('search').addEventListener('input', renderRecipes);",
             "    $('buildList').addEventListener('click', buildShoppingList);",
             "    $('copyList').addEventListener('click', copyShoppingList);",
@@ -513,6 +642,7 @@ def _dashboard_html(vault_path: Path, config: AutomationConfig) -> str:
             "<head>",
             '  <meta charset="utf-8">',
             '  <meta name="viewport" content="width=device-width, initial-scale=1">',
+            '  <link rel="icon" href="/favicon.svg" type="image/svg+xml">',
             "  <title>CronPot Dashboard</title>",
             "  <style>",
             "    :root { color-scheme: light; --ink: #20241f; --muted: #667064; --line: #d9ded4; --surface: #f7f6ef; --panel: #ffffff; --accent: #38704c; }",
@@ -520,6 +650,8 @@ def _dashboard_html(vault_path: Path, config: AutomationConfig) -> str:
             "    body { margin: 0; background: var(--surface); color: var(--ink); font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; line-height: 1.45; }",
             "    main { max-width: 1180px; margin: 0 auto; padding: 32px 24px 48px; }",
             "    header { display: flex; align-items: end; justify-content: space-between; gap: 24px; border-bottom: 1px solid var(--line); padding-bottom: 18px; }",
+            "    .brand { display: flex; align-items: center; gap: 16px; min-width: 0; }",
+            "    .logo { width: 60px; height: 60px; object-fit: contain; flex: 0 0 auto; }",
             "    h1 { font-size: 32px; margin: 0 0 6px; font-weight: 720; }",
             "    h2 { font-size: 16px; margin: 0 0 14px; font-weight: 700; }",
             "    p { margin: 0; }",
@@ -543,15 +675,18 @@ def _dashboard_html(vault_path: Path, config: AutomationConfig) -> str:
             "    tbody tr:hover { background: #f8faf4; }",
             "    .tagline { display: flex; flex-wrap: wrap; gap: 6px; }",
             "    .tag { background: #edf2e8; color: #38513f; padding: 2px 7px; font-size: 12px; }",
-            "    @media (max-width: 820px) { main { padding: 22px 16px 34px; } header, .workspace { display: block; } .metrics { grid-template-columns: 1fr; } .status { display: block; margin-top: 12px; } .bar { grid-template-columns: 96px 1fr 30px; } }",
+            "    @media (max-width: 820px) { main { padding: 22px 16px 34px; } header, .workspace { display: block; } .brand { align-items: flex-start; } .logo { width: 50px; height: 50px; } .metrics { grid-template-columns: 1fr; } .status { display: block; margin-top: 12px; } .bar { grid-template-columns: 96px 1fr 30px; } }",
             "  </style>",
             "</head>",
             "<body>",
             "  <main>",
             "    <header>",
-            "      <div>",
-            "        <h1>CronPot Dashboard</h1>",
-            f"        <p class=\"muted\">Vault: {escape(str(vault_path))}</p>",
+            "      <div class=\"brand\">",
+            "        <img class=\"logo\" src=\"/assets/cronpot-logo.svg\" alt=\"CronPot logo\">",
+            "        <div>",
+            "          <h1>CronPot Dashboard</h1>",
+            f"          <p class=\"muted\">Vault: {escape(str(vault_path))}</p>",
+            "        </div>",
             "      </div>",
             "      <p class=\"status\">Service online</p>",
             "    </header>",
@@ -679,6 +814,15 @@ def _query_values(query: dict[str, list[str]], key: str) -> list[str]:
 
 def _truthy(value: str) -> bool:
     return value.strip().casefold() in {"1", "true", "yes", "y", "on"}
+
+
+def _mobile_k8s_error(direction: str, namespace: str, output: str) -> str:
+    details = output.strip()
+    hint = (
+        f"Could not {direction} the GitHub vault through Kubernetes namespace {namespace}. "
+        "Check that Docker Desktop or your cluster is running, the namespace exists, and the GitHub vault Secret is configured."
+    )
+    return f"{hint} {details}" if details else hint
 
 
 def run_server(host: str, port: int, vault_path: Path | str, config: AutomationConfig, pairing_code: str = "") -> None:

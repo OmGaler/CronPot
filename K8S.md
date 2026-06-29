@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/cronpot-logo.svg" alt="CronPot logo" width="96">
+</p>
+
 # CronPot Kubernetes Reference
 
 CronPot uses plain Kubernetes manifests with Kustomize overlays. Helm is not required. The detailed manifest walkthrough lives in [k8s/README.md](k8s/README.md); this file is the quick operator reference.
@@ -156,8 +160,11 @@ scripts\k8s-seed-vault.cmd docs cronpot-local /clear
 Copy the PVC-backed vault back into a local folder:
 
 ```cmd
+cronpot k8s status --namespace cronpot-local
 cronpot k8s sync-back docs --namespace cronpot-local
 ```
+
+`status` is the quick health check. It reports whether `kubectl` is available, whether the cluster is reachable, whether the namespace exists, and, when possible, the running API pod, worker readiness, vault recipe count, and stored job count.
 
 Script wrapper:
 
@@ -217,7 +224,11 @@ Push the current PVC contents back to GitHub:
 ```cmd
 cronpot k8s push-local docs --namespace cronpot-local
 cronpot k8s github push --namespace cronpot-local --message "Sync CronPot vault from Kubernetes"
+cronpot k8s github push --namespace cronpot-local --seed-from docs
+cronpot k8s github push --namespace cronpot-local --no-seed
 ```
+
+`github push` seeds from local `docs` into `/vault/docs` by default, removes duplicate top-level Markdown files left by older bad pushes, then pushes `/vault` to GitHub. Use `--seed-from other-vault` for a different local folder. Use `--no-seed` only when you deliberately want to push whatever is already in `/vault`.
 
 The sync runs as a one-shot Kubernetes Job using `alpine/git`. It mounts the same `cronpot-vault` PVC as the API and worker, skips `.cronpot` runtime queue files when pushing, preserves GitHub files that are absent from the PVC, and deletes the Job after completion by default.
 

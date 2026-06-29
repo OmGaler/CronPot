@@ -10,11 +10,18 @@ from collections import Counter
 from dataclasses import dataclass
 from html import escape
 from pathlib import Path
+from urllib.parse import quote
 
 from cronpot.models import Recipe
 from cronpot.config import AutomationConfig
 from cronpot.normalisation import normalise_text
 from cronpot.vault import load_recipes
+
+
+LOGO_SVG = Path(__file__).resolve().parent.parent / "assets" / "cronpot-logo.svg"
+LOGO_DATA_URI = ""
+if LOGO_SVG.exists():
+    LOGO_DATA_URI = "data:image/svg+xml;utf8," + quote(LOGO_SVG.read_text(encoding="utf-8"), safe="/:=#;,%?&+()!~*")
 
 
 @dataclass(slots=True)
@@ -104,6 +111,7 @@ def bundle_markdown(recipes: list[tuple[Path, Recipe]]) -> str:
 
 def html_cookbook(recipes: list[tuple[Path, Recipe]], title: str = "CronPot Cookbook") -> str:
     recipe_blocks = [_html_recipe(path, recipe) for path, recipe in recipes]
+    logo = f'    <img class="logo" src="{LOGO_DATA_URI}" alt="CronPot logo">\n' if LOGO_DATA_URI else ""
     return "\n".join(
         [
             "<!doctype html>",
@@ -114,6 +122,10 @@ def html_cookbook(recipes: list[tuple[Path, Recipe]], title: str = "CronPot Cook
             f"  <title>{escape(title)}</title>",
             "  <style>",
             "    body { font-family: system-ui, sans-serif; line-height: 1.55; margin: 2rem auto; max-width: 72rem; padding: 0 1rem; }",
+            "    .brand { display: flex; align-items: center; gap: .8rem; border-bottom: 1px solid #ddd; padding-bottom: 1rem; margin-bottom: .5rem; }",
+            "    .logo { width: 3rem; height: 3rem; object-fit: contain; flex: 0 0 auto; }",
+            "    .brand h1 { margin: 0; }",
+            "    .brand p { margin: .25rem 0 0; color: #555; }",
             "    h1, h2 { line-height: 1.2; }",
             "    article { border-top: 1px solid #ddd; padding: 1.5rem 0; }",
             "    .meta { color: #555; display: flex; flex-wrap: wrap; gap: .5rem 1rem; }",
@@ -123,8 +135,13 @@ def html_cookbook(recipes: list[tuple[Path, Recipe]], title: str = "CronPot Cook
             "  </style>",
             "</head>",
             "<body>",
-            f"  <h1>{escape(title)}</h1>",
-            f"  <p>{len(recipes)} recipe{'s' if len(recipes) != 1 else ''}</p>",
+            "  <header class=\"brand\">",
+            logo.rstrip(),
+            "    <div>",
+            f"      <h1>{escape(title)}</h1>",
+            f"      <p>{len(recipes)} recipe{'s' if len(recipes) != 1 else ''}</p>",
+            "    </div>",
+            "  </header>",
             *recipe_blocks,
             "</body>",
             "</html>",

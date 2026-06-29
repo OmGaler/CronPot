@@ -56,6 +56,17 @@ def get_job(vault_path: Path | str, job_id: str) -> IngestJob | None:
     return _read_job(_job_dir(vault_path) / f"{job_id}.json")
 
 
+def clear_jobs(vault_path: Path | str) -> int:
+    directory = _job_dir(vault_path)
+    if not directory.exists():
+        return 0
+    cleared = 0
+    for path in directory.glob("*.json"):
+        path.unlink()
+        cleared += 1
+    return cleared
+
+
 def run_pending_jobs(vault_path: Path | str, config: AutomationConfig, workers: int = 1, limit: int | None = None) -> list[IngestJob]:
     reset_stale_jobs(vault_path, stale_after_seconds=config.worker_stale_after_seconds)
     pending = [job for job in list_jobs(vault_path) if job.status == "pending"]

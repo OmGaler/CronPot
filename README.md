@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/cronpot-logo.svg" alt="CronPot logo" width="160">
+</p>
+
 # CronPot
 
 CronPot is automation tooling for an Obsidian-style recipe vault. The app repo tracks code, tests, Kubernetes manifests, scripts, and CI/CD. Recipe vault data is intentionally ignored here so it can be managed as a separate vault or repository later.
@@ -232,8 +236,11 @@ scripts\k8s-seed-vault.cmd docs cronpot-local /clear
 Sync the Kubernetes PVC back into a local vault folder:
 
 ```cmd
+cronpot k8s status --namespace cronpot-local
 cronpot k8s sync-back docs --namespace cronpot-local
 ```
+
+`status` gives a quick read on `kubectl`, cluster reachability, namespace presence, API pod readiness, worker readiness, vault recipe count, and stored job count.
 
 Add `--commit` when `docs` is a Git repository and you want a commit created after the copy. The older `scripts\k8s-sync-back.cmd docs cronpot-local` wrapper is still available.
 
@@ -254,9 +261,11 @@ cronpot k8s github pull --namespace cronpot-local
 cronpot k8s github pull --namespace cronpot-local --sync-back docs
 cronpot k8s push-local docs --namespace cronpot-local
 cronpot k8s github push --namespace cronpot-local --message "Sync CronPot vault from Kubernetes"
+cronpot k8s github push --namespace cronpot-local --seed-from docs
+cronpot k8s github push --namespace cronpot-local --no-seed
 ```
 
-`github pull` updates the Kubernetes PVC first. Use `--sync-back docs` when you also want the local Obsidian folder updated immediately.
+`github pull` updates the Kubernetes PVC first. Use `--sync-back docs` when you also want the local Obsidian folder updated immediately. `github push` seeds from local `docs` into `/vault/docs` by default before pushing and removes duplicate top-level Markdown files left by older bad pushes; use `--seed-from other-vault` for another local folder or `--no-seed` for a PVC-only push.
 
 Current local prerequisites: Docker Desktop must be running, and a Kubernetes context must be configured. `kubectl` is available on this machine; Helm is not required.
 

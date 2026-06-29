@@ -18,7 +18,7 @@ from cronpot.config import load_config
 from cronpot.extraction import fetch_html
 from cronpot.ingest import prepare_ingested_recipe
 from cronpot.importing import import_markdown_vault
-from cronpot.jobs import enqueue_ingest_job, job_to_dict, list_jobs, retry_job, run_pending_jobs
+from cronpot.jobs import clear_jobs, enqueue_ingest_job, job_to_dict, list_jobs, retry_job, run_pending_jobs
 from cronpot.llm import LlmError, suggest_ingredient_alias_map, suggest_ingredient_aliases
 from cronpot.models import Recipe
 from cronpot.server import run_server
@@ -98,6 +98,9 @@ def build_parser() -> argparse.ArgumentParser:
     jobs_retry.add_argument("job_id")
     jobs_retry.add_argument("--vault", default=None)
     jobs_retry.set_defaults(func=cmd_jobs_retry)
+    jobs_clear = jobs_subparsers.add_parser("clear", help="Delete all stored ingest jobs.")
+    jobs_clear.add_argument("--vault", default=None)
+    jobs_clear.set_defaults(func=cmd_jobs_clear)
 
     worker = subparsers.add_parser("worker", parents=[config_parent], help="Process queued background jobs.")
     worker.add_argument("--vault", default=None)
@@ -161,6 +164,10 @@ def build_parser() -> argparse.ArgumentParser:
     k8s = subparsers.add_parser("k8s", aliases=["k"], help="Operate CronPot Kubernetes helpers.")
     k8s_subparsers = k8s.add_subparsers(dest="k8s_command", required=True)
 
+    k8s_status = k8s_subparsers.add_parser("status", help="Show local Kubernetes and CronPot namespace status.")
+    k8s_status.add_argument("--namespace", default="cronpot-local")
+    k8s_status.set_defaults(func=cmd_k8s_status)
+
     k8s_sync_back = k8s_subparsers.add_parser("sync-back", help="Copy the Kubernetes PVC vault back to a local folder.")
     k8s_sync_back.add_argument("target", help="Local vault folder to update.")
     k8s_sync_back.add_argument("--namespace", default="cronpot-local")
@@ -202,6 +209,8 @@ def build_parser() -> argparse.ArgumentParser:
     k8s_github_push.add_argument("--message", default="Sync CronPot vault from Kubernetes")
     k8s_github_push.add_argument("--timeout", type=int, default=180)
     k8s_github_push.add_argument("--keep-job", action="store_true")
+    k8s_github_push.add_argument("--seed-from", default="docs", metavar="SOURCE", help="Copy a local vault into its matching folder under /vault before pushing to GitHub. Defaults to docs.")
+    k8s_github_push.add_argument("--no-seed", action="store_true", help="Push the existing Kubernetes PVC without copying a local vault first.")
     k8s_github_push.set_defaults(func=cmd_k8s_github_push)
 
     return parser
@@ -373,6 +382,13 @@ def cmd_jobs_retry(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_jobs_clear(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    cleared = clear_jobs(_vault_path(args, config))
+    print(f"Cleared {cleared} job{'s' if cleared != 1 else ''}.")
+    return 0
+
+
 def cmd_worker(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     vault = _vault_path(args, config)
@@ -472,7 +488,14 @@ def cmd_k8s_github_pull(args: argparse.Namespace) -> int:
 
 
 def cmd_k8s_github_push(args: argparse.Namespace) -> int:
+    if not args.no_seed:
+        _seed_local_vault_for_github_push(args.seed_from, args.namespace)
     _run_github_sync_job("push", args.namespace, args.message, args.timeout, args.keep_job)
+    return 0
+
+
+def cmd_k8s_status(args: argparse.Namespace) -> int:
+    _print_k8s_status(args.namespace)
     return 0
 
 
@@ -618,6 +641,60 @@ def _kubectl_output(command: list[str]) -> str:
     return subprocess.run(command, text=True, capture_output=True, check=True).stdout.strip()
 
 
+def _kubectl_probe(command: list[str]) -> tuple[bool, str]:
+    result = subprocess.run(command, text=True, capture_output=True, check=False)
+    output = (result.stdout or result.stderr).strip()
+    return result.returncode == 0, output
+
+
+def _print_k8s_status(namespace: str) -> None:
+    print(f"CronPot Kubernetes status for namespace {namespace}")
+    kubectl_ok, kubectl_output = _kubectl_probe(["kubectl", "version", "--client"])
+    print(f"- kubectl: {'available' if kubectl_ok else 'unavailable'}")
+    if not kubectl_ok and kubectl_output:
+        print(f"  {kubectl_output}")
+        return
+
+    cluster_ok, cluster_output = _kubectl_probe(["kubectl", "cluster-info"])
+    print(f"- cluster: {'reachable' if cluster_ok else 'unreachable'}")
+    if not cluster_ok:
+        if cluster_output:
+            print(f"  {cluster_output}")
+        return
+
+    namespace_ok, namespace_output = _kubectl_probe(["kubectl", "get", "namespace", namespace, "-o", "name"])
+    print(f"- namespace: {'found' if namespace_ok else 'missing'}")
+    if not namespace_ok:
+        if namespace_output:
+            print(f"  {namespace_output}")
+        return
+
+    api_ok, api_pod = _kubectl_probe(
+        [
+            "kubectl",
+            "-n",
+            namespace,
+            "get",
+            "pod",
+            "-l",
+            "app.kubernetes.io/component=api",
+            "-o",
+            "jsonpath={.items[?(@.status.phase=='Running')].metadata.name}",
+        ]
+    )
+    api_name = api_pod.split()[0] if api_ok and api_pod.strip() else ""
+    print(f"- api pod: {api_name or 'not running'}")
+    worker_ok, workers = _kubectl_probe(["kubectl", "-n", namespace, "get", "deployment", "cronpot-worker", "-o", "jsonpath={.status.readyReplicas}"])
+    print(f"- worker ready replicas: {workers.strip() if worker_ok and workers.strip() else '0'}")
+    if not api_name:
+        return
+
+    recipes_ok, recipes = _kubectl_probe(["kubectl", "-n", namespace, "exec", api_name, "--", "sh", "-c", "find /vault -name '*.md' | wc -l"])
+    jobs_ok, jobs = _kubectl_probe(["kubectl", "-n", namespace, "exec", api_name, "--", "sh", "-c", "find /vault/.cronpot/jobs -name '*.json' 2>/dev/null | wc -l"])
+    print(f"- vault recipes: {recipes.strip() if recipes_ok else 'unknown'}")
+    print(f"- stored jobs: {jobs.strip() if jobs_ok else 'unknown'}")
+
+
 def _running_api_pod(namespace: str) -> str:
     pod = _kubectl_output(
         [
@@ -705,6 +782,28 @@ def _push_local_vault_to_k8s(source: str, namespace: str, destination: str | Non
         ]
     )
     print(f"Pushed local {source_path} to {namespace}/{pod}:{remote_path} with {count.strip()} Markdown file(s).")
+
+
+def _seed_local_vault_for_github_push(source: str, namespace: str) -> None:
+    source_path = Path(source)
+    _push_local_vault_to_k8s(source, namespace, None, True)
+    _remove_k8s_duplicate_root_markdown(namespace, source_path.name)
+
+
+def _remove_k8s_duplicate_root_markdown(namespace: str, folder_name: str) -> None:
+    pod = _running_api_pod(namespace)
+    folder = f"/vault/{folder_name}"
+    script = (
+        f"if [ -d {_sh_single_quote(folder)} ]; then "
+        "for file in /vault/*.md; do "
+        "[ -e \"$file\" ] || continue; "
+        "name=$(basename \"$file\"); "
+        "[ \"$name\" = \"README.md\" ] && continue; "
+        f"[ -e {_sh_single_quote(folder)}/\"$name\" ] && rm -f \"$file\"; "
+        "done; "
+        "fi"
+    )
+    _run(["kubectl", "-n", namespace, "exec", pod, "--", "sh", "-c", script])
 
 
 def _copy_local_vault_for_push(source: Path, target: Path) -> None:
@@ -919,6 +1018,16 @@ fi
 
 cp -a /vault/. "$repo_path"/
 rm -rf "$repo_path/.cronpot"
+if [ -d "$repo_path/docs" ]; then
+  for file in "$repo_path"/*.md; do
+    [ -e "$file" ] || continue
+    name="$(basename "$file")"
+    [ "$name" = "README.md" ] && continue
+    if [ -e "$repo_path/docs/$name" ]; then
+      rm -f "$file"
+    fi
+  done
+fi
 
 git -C /work/repo config user.name "$GIT_AUTHOR_NAME"
 git -C /work/repo config user.email "$GIT_AUTHOR_EMAIL"

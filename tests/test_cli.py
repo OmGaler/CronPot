@@ -3,13 +3,15 @@ from __future__ import annotations
 import tempfile
 import unittest
 import os
+import subprocess
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
-from cronpot.cli import _copy_local_vault_for_push, _ingest_title, _k8s_vault_destination, main
+from cronpot.cli import _copy_local_vault_for_push, _github_push_script, _ingest_title, _k8s_vault_destination, main
 from cronpot.config import AutomationConfig
+from cronpot.jobs import enqueue_ingest_job, list_jobs
 from cronpot.llm import IngredientAliasSuggestion
 from cronpot.models import Recipe
 from cronpot.vault import write_recipe_to_vault
@@ -82,6 +84,19 @@ class CliTests(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             self.assertIn("# Aglio e Olio", stdout.getvalue())
             self.assertIn("- 100g spaghetti", stdout.getvalue())
+
+    def test_jobs_clear_command_removes_stored_jobs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            vault = Path(temp_dir)
+            enqueue_ingest_job(vault, "https://example.com/soup")
+            stdout = StringIO()
+
+            with redirect_stdout(stdout):
+                exit_code = main(["jobs", "clear", "--vault", str(vault)])
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(list_jobs(vault), [])
+            self.assertIn("Cleared 1 job.", stdout.getvalue())
 
     def test_export_command_supports_pdf_format(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -226,7 +241,7 @@ class CliTests(unittest.TestCase):
 
     def test_k8s_github_push_creates_sync_job(self) -> None:
         with patch("cronpot.cli._run_with_input") as apply, patch("cronpot.cli._run") as run, patch("cronpot.cli.subprocess.run"), patch("cronpot.cli.time.strftime", return_value="20260617010101"), redirect_stdout(StringIO()):
-            exit_code = main(["k8s", "github", "push", "--namespace", "cronpot-local", "--message", "Sync from test"])
+            exit_code = main(["k8s", "github", "push", "--namespace", "cronpot-local", "--message", "Sync from test", "--no-seed"])
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(apply.call_args.args[0], ["kubectl", "apply", "-f", "-"])
@@ -336,6 +351,58 @@ class CliTests(unittest.TestCase):
         run_job.assert_called_once_with("pull", "cronpot-local", "Sync CronPot vault from GitHub", 180, False)
         summary.assert_called_once_with("cronpot-local")
         sync_back.assert_called_once_with("docs", "cronpot-local", True, "Sync CronPot vault from Kubernetes")
+
+    def test_k8s_github_push_seeds_from_local_vault_by_default(self) -> None:
+        with patch("cronpot.cli._seed_local_vault_for_github_push") as seed, patch("cronpot.cli._run_github_sync_job") as run_job:
+            exit_code = main(["k8s", "github", "push", "--namespace", "cronpot-local"])
+
+        self.assertEqual(exit_code, 0)
+        seed.assert_called_once_with("docs", "cronpot-local")
+        run_job.assert_called_once_with("push", "cronpot-local", "Sync CronPot vault from Kubernetes", 180, False)
+
+    def test_k8s_github_push_can_skip_local_seed(self) -> None:
+        with patch("cronpot.cli._seed_local_vault_for_github_push") as seed, patch("cronpot.cli._run_github_sync_job") as run_job:
+            exit_code = main(["k8s", "github", "push", "--namespace", "cronpot-local", "--no-seed"])
+
+        self.assertEqual(exit_code, 0)
+        seed.assert_not_called()
+        run_job.assert_called_once_with("push", "cronpot-local", "Sync CronPot vault from Kubernetes", 180, False)
+
+    def test_k8s_github_seed_preserves_docs_folder_layout(self) -> None:
+        with patch("cronpot.cli._push_local_vault_to_k8s") as push_local, patch("cronpot.cli._remove_k8s_duplicate_root_markdown") as cleanup:
+            from cronpot.cli import _seed_local_vault_for_github_push
+
+            _seed_local_vault_for_github_push("docs", "cronpot-local")
+
+        push_local.assert_called_once_with("docs", "cronpot-local", None, True)
+        cleanup.assert_called_once_with("cronpot-local", "docs")
+
+    def test_github_push_script_removes_root_markdown_duplicates(self) -> None:
+        script = _github_push_script()
+
+        self.assertIn('if [ -d "$repo_path/docs" ]; then', script)
+        self.assertIn('[ -e "$repo_path/docs/$name" ]', script)
+        self.assertIn('rm -f "$file"', script)
+        self.assertIn('[ "$name" = "README.md" ] && continue', script)
+
+    def test_k8s_status_prints_cluster_summary(self) -> None:
+        responses = [
+            subprocess.CompletedProcess(["kubectl"], 0, "Client Version: v1.30", ""),
+            subprocess.CompletedProcess(["kubectl"], 0, "Kubernetes control plane is running", ""),
+            subprocess.CompletedProcess(["kubectl"], 0, "namespace/cronpot-local", ""),
+            subprocess.CompletedProcess(["kubectl"], 0, "cronpot-api-123", ""),
+            subprocess.CompletedProcess(["kubectl"], 0, "1", ""),
+            subprocess.CompletedProcess(["kubectl"], 0, "120", ""),
+            subprocess.CompletedProcess(["kubectl"], 0, "3", ""),
+        ]
+        stdout = StringIO()
+        with patch("cronpot.cli.subprocess.run", side_effect=responses), redirect_stdout(stdout):
+            exit_code = main(["k8s", "status", "--namespace", "cronpot-local"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("cluster: reachable", stdout.getvalue())
+        self.assertIn("api pod: cronpot-api-123", stdout.getvalue())
+        self.assertIn("vault recipes: 120", stdout.getvalue())
 
     def test_normalise_ingredients_suggest_prints_aliases(self) -> None:
         stdout = StringIO()

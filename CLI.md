@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/cronpot-logo.svg" alt="CronPot logo" width="96">
+</p>
+
 # CronPot CLI
 
 The installed command is `cronpot`. From a checkout, install it with:
@@ -158,7 +162,13 @@ Retry a failed or stale job:
 cronpot jobs retry JOB_ID --vault docs
 ```
 
-Statuses are `pending`, `running`, `complete`, and `failed`. Failed jobs can be retried until they hit `[worker].max_attempts`.
+Clear stored jobs:
+
+```powershell
+cronpot jobs clear --vault docs
+```
+
+Statuses are `pending`, `running`, `complete`, and `failed`. Failed jobs can be retried until they hit `[worker].max_attempts`. Clearing jobs deletes only stored job records under `.cronpot/jobs`; it does not delete recipes.
 
 ## `cronpot worker`
 
@@ -226,7 +236,7 @@ cronpot start --lan --vault docs
 
 The command prints the serving URL, then blocks while the server is running.
 
-`--lan` is for same-network phone access. It binds to the configured host, prints a six digit pairing code, and prints detected mobile URLs such as `http://192.168.1.42:8080/mobile`. Open that URL on your phone and enter the code. After pairing, the mobile page can queue ingest jobs, refresh job status, search recipes, build shopping lists, and copy the list.
+`--lan` is for same-network phone access. It binds to the configured host, prints a six digit pairing code, and prints detected mobile URLs such as `http://192.168.1.42:8080/mobile`. Open that URL on your phone and enter the code. After pairing, the mobile page can queue, run, retry, and clear ingest jobs; pull and push the Kubernetes-backed GitHub vault; search recipes; build shopping lists; and copy the list.
 
 `--auth-code CODE` sets a fixed six digit code instead of generating one. It is mainly for repeatable local testing.
 
@@ -252,6 +262,14 @@ method_style = "imperative"
 ## `cronpot k8s`
 
 Kubernetes helper commands are available under `cronpot k8s`. The shorter alias `cronpot k` works too.
+
+Show Kubernetes status:
+
+```powershell
+cronpot k8s status --namespace cronpot-local
+```
+
+`status` checks `kubectl`, cluster reachability, namespace presence, API pod readiness, worker readiness, vault recipe count, and stored job count where those checks are available.
 
 Copy the Kubernetes PVC vault back into a local folder:
 
@@ -293,4 +311,8 @@ Push the Kubernetes PVC back to GitHub:
 ```powershell
 cronpot k8s push-local docs --namespace cronpot-local
 cronpot k8s github push --namespace cronpot-local --message "Sync CronPot vault from Kubernetes"
+cronpot k8s github push --namespace cronpot-local --seed-from docs
+cronpot k8s github push --namespace cronpot-local --no-seed
 ```
+
+`github push` seeds from local `docs` into `/vault/docs` by default, removes duplicate top-level Markdown files left by older bad pushes, then commits and pushes the PVC state. Use `--seed-from other-vault` for a different local folder. Use `--no-seed` only when you deliberately want to push the current Kubernetes PVC exactly as it is.

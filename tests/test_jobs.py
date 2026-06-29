@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from cronpot.config import AutomationConfig
-from cronpot.jobs import enqueue_ingest_job, get_job, list_jobs, reset_stale_jobs, retry_job, run_pending_jobs
+from cronpot.jobs import clear_jobs, enqueue_ingest_job, get_job, list_jobs, reset_stale_jobs, retry_job, run_pending_jobs
 
 
 class JobTests(unittest.TestCase):
@@ -61,6 +61,17 @@ class JobTests(unittest.TestCase):
 
         self.assertEqual(len(reset), 1)
         self.assertEqual(reset[0].status, "pending")
+
+    def test_clears_stored_jobs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            vault = Path(temp_dir)
+            enqueue_ingest_job(vault, "https://example.com/one")
+            enqueue_ingest_job(vault, "https://example.com/two")
+
+            cleared = clear_jobs(vault)
+
+            self.assertEqual(cleared, 2)
+            self.assertEqual(list_jobs(vault), [])
 
 
 if __name__ == "__main__":

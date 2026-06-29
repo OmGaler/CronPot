@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -68,6 +69,8 @@ class ServerTests(unittest.TestCase):
         text = self.get_text("/")
 
         self.assertIn("<title>CronPot Dashboard</title>", text)
+        self.assertIn('href="/favicon.svg"', text)
+        self.assertIn('src="/assets/cronpot-logo.svg"', text)
         self.assertIn("Service online", text)
         self.assertIn("Aglio e Olio", text)
         self.assertIn("Top ingredients", text)
@@ -114,9 +117,19 @@ class ServerTests(unittest.TestCase):
         text = self.get_html(f"/recipes/{quote('Aglio e Olio')}")
 
         self.assertIn("<title>Aglio e Olio</title>", text)
+        self.assertIn('alt="CronPot logo"', text)
         self.assertIn("<h2>Aglio e Olio</h2>", text)
         self.assertIn("<li>100g spaghetti</li>", text)
         self.assertIn('href="/dashboard"', text)
+
+    def test_serves_logo_asset_for_favicon_and_ui(self) -> None:
+        request = Request(f"{self.base_url}/assets/cronpot-logo.svg")
+        with urlopen(request, timeout=5) as response:
+            body = response.read().decode("utf-8")
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(response.headers["Content-Type"], "image/svg+xml")
+        self.assertIn("<svg", body)
 
     def test_rejects_missing_recipe_detail(self) -> None:
         with self.assertRaises(HTTPError) as error:
@@ -190,6 +203,16 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(retried["status"], "pending")
         self.assertEqual(retried["error"], "")
 
+    def test_clear_jobs_endpoint_removes_all_jobs(self) -> None:
+        self.post_json("/jobs/ingest", {"url": "https://example.com/one"})
+        self.post_json("/jobs/ingest", {"url": "https://example.com/two"})
+
+        cleared = self.post_json("/jobs/clear", {})
+        jobs = self.get_json("/jobs")
+
+        self.assertEqual(cleared["cleared"], 2)
+        self.assertEqual(jobs["jobs"], [])
+
     def test_pairing_code_protects_api_until_mobile_authenticates(self) -> None:
         CronPotHandler.pairing_code = "123456"
 
@@ -218,7 +241,43 @@ class ServerTests(unittest.TestCase):
 
         self.assertIn("Pair this device", text)
         self.assertIn("Queue recipe ingest", text)
+        self.assertIn("Vault sync", text)
+        self.assertIn("Run jobs", text)
+        self.assertIn("Clear jobs", text)
+        self.assertIn("retryJob", text)
+        self.assertIn('aria-label="Retry job"', text)
+        self.assertIn("icon-button retry-job", text)
+        self.assertIn("Command tips", text)
+        self.assertIn("cronpot k8s github pull", text)
         self.assertIn("Shopping list", text)
+
+    def test_mobile_k8s_pull_runs_cli_command(self) -> None:
+        with patch(
+            "cronpot.server.subprocess.run",
+            return_value=subprocess.CompletedProcess(["python"], 0, "Pulled vault", ""),
+        ) as run:
+            payload = self.post_json("/k8s/github/pull", {})
+
+        self.assertEqual(payload["status"], "complete")
+        self.assertEqual(payload["direction"], "pull")
+        self.assertEqual(payload["namespace"], "cronpot-local")
+        self.assertIn("Pulled vault", payload["output"])
+        self.assertEqual(run.call_args.args[0][2:], ["cronpot", "k8s", "github", "pull", "--namespace", "cronpot-local"])
+
+    def test_mobile_k8s_sync_reports_cluster_errors(self) -> None:
+        with patch(
+            "cronpot.server.subprocess.run",
+            return_value=subprocess.CompletedProcess(["python"], 1, "", "connection refused"),
+        ) as run:
+            with self.assertRaises(HTTPError) as error:
+                self.post_json("/k8s/github/push", {})
+
+        self.assertEqual(error.exception.code, 502)
+        self.assertEqual(run.call_args.args[0][2:], ["cronpot", "k8s", "github", "push", "--namespace", "cronpot-local", "--seed-from", str(self.vault)])
+        body = json.loads(error.exception.read().decode("utf-8"))
+        self.assertIn("Could not push the GitHub vault", body["error"])
+        self.assertIn("cluster is running", body["error"])
+        self.assertIn("connection refused", body["output"])
 
     def get_json(self, path: str, headers: dict[str, str] | None = None) -> dict[str, object]:
         request = Request(f"{self.base_url}{path}", headers=headers or {})

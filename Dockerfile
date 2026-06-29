@@ -7,6 +7,7 @@ WORKDIR /app
 
 COPY pyproject.toml README.md ./
 COPY cronpot ./cronpot
+COPY assets ./assets
 
 RUN useradd --create-home --uid 10001 appuser
 

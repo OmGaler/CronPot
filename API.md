@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/cronpot-logo.svg" alt="CronPot logo" width="96">
+</p>
+
 # CronPot HTTP API
 
 Start the service locally:
