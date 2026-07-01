@@ -4,7 +4,7 @@
 
 # CronPot
 
-CronPot is a recipe automation, management and orchestration tool. The app is Kubernetes based. Recipes are stored as markdown files in a backing "vault", which can be a local directory or remote GitHub repo. It's suitable for integration with obsidian.
+CronPot is a kubernetes-based recipe automation, management and orchestration tool. Recipes are stored as markdown files in a backing "vault", which can be a local directory or remote GitHub repo.
 Features:
 - ingest recipes from a website URL
 - batch import a local Obsidian vault or cloned repository of Markdown recipes
@@ -13,10 +13,10 @@ Features:
   - suggest ingredient normalisation aliases to canonise ingredients for the purpose of analytics, for instance granulated sugar and white sugar may coalesce to sugar
   - rewrite newly ingested web recipes with the llm to match the vault style
   - infer Obsidian tags and category wikilinks
-  - analyse a vault with canonical ingredient grouping for common aliases
-  - export shopping lists, Markdown bundles, standalone HTML cookbooks, and rendered Markdown PDFs
-  - run as a containerised HTTP service with a built-in dashboard
-  - test, build, publish, and deploy through GitHub Actions
+- analyse a vault with canonical ingredient grouping for common aliases
+- export shopping lists, Markdown bundles, standalone HTML cookbooks, and rendered Markdown PDFs
+- run as a containerised HTTP service with a built-in dashboard
+- test, build, publish, and deploy through GitHub Actions
 
 A document vault can be a plain folder, an Obsidian vault, or a Git checkout.
 

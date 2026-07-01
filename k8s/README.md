@@ -4,11 +4,11 @@
 
 # Kubernetes Setup
 
-CronPot uses Kustomize because `kubectl` includes it and Helm is not required. The manifests are intentionally plain Kubernetes so each part is visible while the project is still small.
+CronPot uses Kustomize because `kubectl` includes it and Helm is not required. The manifests are plain Kubernetes resources organised into a shared base and environment overlays.
 
 ## Layout
 
-- `base`: shared production-shaped resources
+- `base`: shared resources
 - `overlays/local`: local Docker Desktop development using `python:3.12-slim` with source mounted from a ConfigMap
 - `overlays/dev`: deployable development environment
 - `overlays/staging`: deployable staging environment
@@ -26,20 +26,6 @@ The base includes:
 - analytics CronJob
 - NetworkPolicy
 
-## Pedagogy Map
-
-| Kubernetes piece | CronPot role | What it teaches |
-| --- | --- | --- |
-| Namespace | Separates `local`, `dev`, `staging`, and `production` installs | Environment boundaries and safe namespacing |
-| ServiceAccount | Runs the API, ingest worker, and analytics worker as a named workload identity | Least-privilege workload identity, even before RBAC grows |
-| ConfigMap | Mounts `cronpot.toml` into `/config` | Runtime configuration separate from the container image |
-| PersistentVolumeClaim | Stores the recipe vault at `/vault` | Stateful application data and why storage affects scaling |
-| Deployment | Runs the HTTP API/dashboard and the background ingest worker | Long-running workloads, probes, resources, and security context |
-| Service | Gives the API a stable in-cluster address | Service discovery independent of individual pods |
-| CronJob | Runs scheduled analytics with the same vault and config | Batch workloads sharing state and configuration with the API |
-| NetworkPolicy | Allows HTTP ingress to the API pods | Pod traffic boundaries and how policy becomes explicit |
-| Overlays | Adjust namespaces, images, PVC size, and local source mounting | Promotion between environments without duplicating the base |
-
 ## Environments
 
 | Overlay | Namespace | Image source | Vault PVC |
@@ -49,27 +35,27 @@ The base includes:
 | `staging` | `cronpot-staging` | GHCR image | 2Gi |
 | `production` | `cronpot` | GHCR image | 5Gi |
 
-Practical differences:
+Overlay differences:
 
-| Overlay | Use it when | What changes compared with the previous step |
+| Overlay | Purpose | Notes |
 | --- | --- | --- |
-| `local` | You are editing code on your laptop and want the fastest Kubernetes feedback loop | Runs from mounted source files, uses Docker Desktop-friendly defaults, and is started by `scripts\k8s-start.cmd docs` |
-| `dev` | You want the first shared cluster deployment after code has been built into an image | Uses the packaged GHCR image instead of mounted source, so it tests the container artefact |
-| `staging` | You want a production-like rehearsal before a release | Keeps the same workload shape but uses a separate namespace and a larger vault PVC |
-| `production` | You are deploying the real service | Uses the stable production namespace and the largest PVC in the current manifests |
+| `local` | Local development | Runs from mounted source files, uses Docker Desktop-friendly defaults, and is started by `scripts\k8s-start.cmd docs`. |
+| `dev` | Shared development deployment | Uses the packaged GHCR image instead of mounted source. |
+| `staging` | Pre-production deployment | Uses a separate namespace and a larger vault PVC. |
+| `production` | Production deployment | Uses the production namespace and the largest PVC in the current manifests. |
 
-Each environment currently runs one API replica. The vault is a writable PVC, so multi-replica scaling should wait until we introduce RWX storage or move mutable state into a database/object store. That limitation is useful here: it keeps the stateful part honest instead of pretending a file-backed app can be horizontally scaled without a storage decision.
+Each environment currently runs one API replica. The vault is a writable PVC, so multi-replica scaling requires RWX storage or moving mutable state into a database or object store.
 
-## Deployment Ladder
+## Deployments
 
-Use the environments in this order:
+Deployment targets:
 
-1. `local`: run `scripts\k8s-start.cmd docs` on the laptop. This teaches the resource layout and gives the quickest edit-test loop.
-2. `dev`: deploy the image produced by CI to prove the container artefact works in Kubernetes.
-3. `staging`: deploy the same artefact deliberately as a release rehearsal.
-4. `production`: deploy only after the staging verification is satisfactory.
+1. `local`: run `scripts\k8s-start.cmd docs` against a local Kubernetes context.
+2. `dev`: deploy the image produced by CI to the development namespace.
+3. `staging`: deploy the same image to the pre-production namespace.
+4. `production`: deploy to the production namespace.
 
-`local` is intentionally outside GitHub Actions because it depends on Docker Desktop and a local vault. CI still renders all four overlays, checks their namespace/image/storage contracts, builds the container, and calls its health endpoints. To exercise the deployable part of the ladder, open GitHub Actions, choose `CI/CD`, select **Run workflow**, and run `dev`, `staging`, and `production` in that order. `dev` can also deploy automatically on a `master` push when `KUBE_CONFIG_DEV` is configured.
+`local` is outside GitHub Actions because it depends on Docker Desktop and a local vault. CI still renders all four overlays, checks their namespace/image/storage contracts, builds the container, and calls its health endpoints. `dev` can deploy automatically on a `master` push when `KUBE_CONFIG_DEV` is configured. `staging` and `production` deploy through manual workflow dispatch.
 
 Each deployable environment needs a repository secret containing a kubeconfig: `KUBE_CONFIG_DEV`, `KUBE_CONFIG_STAGING`, or `KUBE_CONFIG_PRODUCTION`. One remote cluster can host all three namespaces, in which case the same kubeconfig can be stored in all three secrets. A Docker Desktop kubeconfig that points at `127.0.0.1` cannot work from GitHub-hosted Actions; use a reachable remote cluster or a self-hosted runner.
 
@@ -77,7 +63,7 @@ Each deployable environment needs a repository secret containing a kubeconfig: `
 
 The local overlay runs from `python:3.12-slim` and mounts the local source files through a ConfigMap. This avoids the Docker Desktop multi-node image-loading problem where a locally built image is visible to Docker but not to Kubernetes.
 
-The shortest local loop is:
+Start the local overlay with:
 
 ```cmd
 scripts\k8s-start.cmd docs
@@ -119,7 +105,7 @@ scripts\k8s-port-forward.cmd cronpot-local
 
 The local deploy helper restarts the API and worker Deployments after applying manifests so updated source files mounted from the ConfigMap are loaded by Python.
 
-The Docker image build is still useful for production and for learning the container path:
+Build the container image locally with:
 
 ```cmd
 scripts\docker-build.cmd
@@ -172,7 +158,7 @@ scripts\k8s-port-forward.cmd cronpot-local
 Invoke-RestMethod http://127.0.0.1:8080/analytics
 ```
 
-Expected result after seeding: the Kubernetes API should report the same recipe count as the local CLI.
+Expected result after seeding: the Kubernetes API reports the same recipe count as the local CLI.
 
 This copies files into the Kubernetes PVC. It does not require Git, and it avoids storing hundreds of Markdown files inside Kubernetes ConfigMaps.
 
@@ -185,7 +171,7 @@ cronpot k8s status --namespace cronpot-local
 cronpot k8s sync-back docs --namespace cronpot-local
 ```
 
-`status` is the first command to run when something feels off. It checks `kubectl`, the current cluster, the namespace, the API pod, worker readiness, vault recipe count, and stored job count where those details are reachable.
+`status` checks `kubectl`, the current cluster, the namespace, the API pod, worker readiness, vault recipe count, and stored job count where those details are reachable.
 
 Script wrapper:
 
@@ -201,7 +187,7 @@ Copy local vault changes into the PVC:
 cronpot k8s push-local docs --namespace cronpot-local
 ```
 
-This copies `docs` into `/vault/docs` by default, which keeps local recipes aligned with the repository-root PVC layout used by GitHub sync. Use `--clear` when you want the remote folder replaced before copying.
+This copies `docs` into `/vault/docs` by default, which keeps local recipes aligned with the repository-root PVC layout used by GitHub sync. Use `--clear` to replace the remote folder before copying.
 
 If the target folder is a Git repository, create a commit after syncing:
 
@@ -247,11 +233,11 @@ cronpot k8s github push --namespace cronpot-local --no-seed
 
 Plain `github push` seeds from local `docs` into `/vault/docs`, removes duplicate top-level Markdown files left by older bad pushes, then runs the GitHub push Job. Use `--seed-from other-vault` for a different local folder, or `--no-seed` when the current PVC should be pushed exactly as it stands.
 
-These commands create one-shot Kubernetes Jobs using `alpine/git`. The token stays in the Secret `cronpot-vault-github`; it is not stored in the manifest files. The `cronpot k ...` alias is also available if you prefer a shorter command.
+These commands create one-shot Kubernetes Jobs using `alpine/git`. The token stays in the Secret `cronpot-vault-github`; it is not stored in the manifest files. The `cronpot k ...` alias is also available.
 
 ## API Checks
 
-With port-forwarding running, try:
+With port-forwarding running:
 
 ```powershell
 Invoke-RestMethod http://127.0.0.1:8080/recipes
@@ -324,13 +310,9 @@ ingredient_limit = 120
 
 To use LLM-backed analytics in Kubernetes, run Ollama in-cluster or expose an existing Ollama endpoint, then keep `auto_normalise_ingredients = true`. To let Kubernetes ingests rewrite extracted recipes into the vault style, also set `rewrite_ingested_recipes = true`.
 
-This is a good next teaching slice because it introduces:
-
-- Kubernetes service discovery through the Ollama service DNS name
-- resource requests and limits for model-serving workloads
-- optional GPU scheduling later
-- model cache persistence through a separate PVC
-- failure isolation, because CronPot should keep serving even if the LLM is unavailable
+For production use, configure resource requests and limits for model-serving
+workloads, persistent model cache storage where needed, and failure isolation so
+CronPot can continue serving when the LLM endpoint is unavailable.
 
 ## Troubleshooting
 
@@ -356,7 +338,7 @@ The unified start helpers run this check before applying manifests so the failur
 scripts\k8s-deploy.cmd local
 ```
 
-The local overlay should use `python:3.12-slim`, not `cronpot:local`.
+The local overlay uses `python:3.12-slim`, not `cronpot:local`.
 
 After the pod is running, call:
 
@@ -372,7 +354,7 @@ kubectl -n cronpot-local create job --from=cronjob/cronpot-analytics cronpot-ana
 kubectl -n cronpot-local logs job/cronpot-analytics-manual
 ```
 
-The CronJob should mount both `/vault` and `/config`, matching the API pod.
+The CronJob mounts both `/vault` and `/config`, matching the API pod.
 
 ## Cluster Deployments
 
