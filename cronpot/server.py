@@ -50,6 +50,9 @@ class CronPotHandler(BaseHTTPRequestHandler):
         if path == "/auth/status":
             self._send_json({"authenticated": self._is_authorised(), "required": bool(self.pairing_code)})
             return
+        if path == "/status":
+            self._send_json(_app_status(self.vault_path))
+            return
         if path in {"/", "/dashboard"}:
             if not self._require_authorised(path):
                 return
@@ -434,6 +437,12 @@ def _mobile_html(authorised: bool) -> str:
             "    section { border-top: 1px solid var(--line); padding-top: 18px; margin-top: 18px; }",
             "    .row { display: grid; gap: 10px; }",
             "    .status { min-height: 22px; color: var(--muted); margin-top: 8px; }",
+            "    .status-strip { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0 0; }",
+            "    .status-pill { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--muted); padding: 5px 8px; font-size: 12px; }",
+            "    .dot { width: 9px; height: 9px; border-radius: 999px; background: #9a9a9a; flex: 0 0 auto; }",
+            "    .dot.green { background: #2f7d46; }",
+            "    .dot.amber { background: #b97822; }",
+            "    .dot.red { background: #b33f3f; }",
             "    .error { color: var(--danger); }",
             "    .success { color: var(--accent); }",
             "    .jobs, .items, .recipes, .tips { display: grid; gap: 8px; margin-top: 10px; }",
@@ -459,6 +468,7 @@ def _mobile_html(authorised: bool) -> str:
             "      <div>",
             "        <h1>CronPot</h1>",
             "        <p class=\"muted\">Mobile tools for ingest jobs and shopping lists.</p>",
+            "        <div id=\"statusStrip\" class=\"status-strip\"><span class=\"status-pill\"><span class=\"dot amber\"></span>Checking status</span></div>",
             "      </div>",
             "    </header>",
             f"    <section id=\"auth\" style=\"display: {auth_display};\">",
@@ -521,6 +531,14 @@ def _mobile_html(authorised: bool) -> str:
             "      const data = text ? JSON.parse(text) : {};",
             "      if (!response.ok) throw new Error(data.error || response.statusText);",
             "      return data;",
+            "    }",
+            "    function renderStatus(data) {",
+            "      const items = [data.service, data.k8s].filter(Boolean);",
+            "      $('statusStrip').innerHTML = items.map(item => '<span class=\"status-pill\" title=\"' + escapeAttr(item.detail || '') + '\"><span class=\"dot ' + escapeAttr(item.level) + '\"></span>' + escapeHtml(item.label) + '</span>').join('');",
+            "    }",
+            "    async function loadStatus() {",
+            "      try { renderStatus(await request('/status')); }",
+            "      catch (error) { $('statusStrip').innerHTML = '<span class=\"status-pill\"><span class=\"dot red\"></span>Status unavailable</span>'; }",
             "    }",
             "    async function pair() {",
             "      $('authStatus').textContent = 'Checking code...';",
@@ -601,7 +619,7 @@ def _mobile_html(authorised: bool) -> str:
             "    }",
             "    function escapeHtml(value) { return String(value || '').replace(/[&<>\"]/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[char])); }",
             "    function escapeAttr(value) { return escapeHtml(value).replace(/'/g, '&#39;'); }",
-            "    async function loadAll() { await Promise.all([loadRecipes(), loadJobs()]); }",
+            "    async function loadAll() { await Promise.all([loadStatus(), loadRecipes(), loadJobs()]); }",
             "    $('pair').addEventListener('click', pair);",
             "    $('code').addEventListener('keydown', event => { if (event.key === 'Enter') pair(); });",
             "    $('queue').addEventListener('click', queueIngest);",
@@ -614,8 +632,10 @@ def _mobile_html(authorised: bool) -> str:
             "    $('search').addEventListener('input', renderRecipes);",
             "    $('buildList').addEventListener('click', buildShoppingList);",
             "    $('copyList').addEventListener('click', copyShoppingList);",
+            "    loadStatus();",
             f"    if ({str(authorised).lower()}) loadAll();",
             "    setInterval(() => { if ($('app').style.display !== 'none') loadJobs().catch(() => {}); }, 5000);",
+            "    setInterval(loadStatus, 15000);",
             "  </script>",
             "</body>",
             "</html>",
@@ -629,11 +649,13 @@ def _dashboard_html(vault_path: Path, config: AutomationConfig) -> str:
     recipes = load_recipes(vault_path, config)
     jobs = list_jobs(vault_path)
     recent_jobs = sorted(jobs, key=lambda job: job.updated_at, reverse=True)[:10]
-    recipe_rows = "\n".join(_dashboard_recipe_row(path, recipe) for path, recipe in recipes[:20])
+    recipe_rows = "\n".join(_dashboard_recipe_row(path, recipe) for path, recipe in recipes)
     recipe_table_body = recipe_rows or '<tr><td colspan="4">No recipes found.</td></tr>'
     missing_source = analytics.recipes_missing_source
     sourced_count = max(analytics.recipe_count - missing_source, 0)
     open_jobs = sum(1 for job in jobs if job.status in {"pending", "running"})
+    status = _app_status(vault_path)
+    status_strip = _status_strip(status)
 
     return "\n".join(
         [
@@ -658,24 +680,34 @@ def _dashboard_html(vault_path: Path, config: AutomationConfig) -> str:
             "    a { color: var(--accent); text-decoration: none; }",
             "    .muted { color: var(--muted); }",
             "    .status { color: var(--accent); font-weight: 700; white-space: nowrap; }",
+            "    .status-strip { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }",
+            "    .status-pill { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--muted); padding: 5px 8px; font-size: 12px; font-weight: 650; white-space: nowrap; }",
+            "    .dot { width: 9px; height: 9px; border-radius: 999px; background: #9a9a9a; flex: 0 0 auto; }",
+            "    .dot.green { background: #2f7d46; }",
+            "    .dot.amber { background: #b97822; }",
+            "    .dot.red { background: #b33f3f; }",
             "    .metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 18px; margin: 28px 0; }",
             "    .metric { border-bottom: 2px solid var(--line); padding-bottom: 14px; }",
             "    .metric strong { display: block; font-size: 34px; line-height: 1; margin-bottom: 8px; }",
             "    .workspace { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 30px; align-items: start; }",
             "    .section { background: var(--panel); border: 1px solid var(--line); padding: 18px; }",
             "    .section + .section { margin-top: 18px; }",
+            "    .section-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 14px; }",
+            "    .section-head h2 { margin: 0; }",
+            "    .search { min-height: 36px; width: min(280px, 100%); border: 1px solid var(--line); background: var(--panel); color: var(--ink); font: inherit; padding: 7px 9px; }",
+            "    .table-scroll { max-height: 560px; overflow: auto; border-top: 1px solid var(--line); }",
             "    .bars { display: grid; gap: 12px; }",
             "    .bar { display: grid; grid-template-columns: 120px 1fr 36px; gap: 10px; align-items: center; font-size: 14px; }",
             "    .track { height: 10px; background: #e7eadf; overflow: hidden; }",
             "    .fill { display: block; height: 100%; transition: width .2s ease; }",
             "    table { width: 100%; border-collapse: collapse; font-size: 14px; }",
-            "    th { color: var(--muted); font-weight: 650; text-align: left; border-bottom: 1px solid var(--line); padding: 0 0 9px; }",
+            "    th { color: var(--muted); font-weight: 650; text-align: left; border-bottom: 1px solid var(--line); padding: 9px 0; position: sticky; top: 0; background: var(--panel); z-index: 1; }",
             "    td { border-bottom: 1px solid var(--line); padding: 11px 8px 11px 0; vertical-align: top; }",
             "    tr { transition: background-color .15s ease; }",
             "    tbody tr:hover { background: #f8faf4; }",
             "    .tagline { display: flex; flex-wrap: wrap; gap: 6px; }",
             "    .tag { background: #edf2e8; color: #38513f; padding: 2px 7px; font-size: 12px; }",
-            "    @media (max-width: 820px) { main { padding: 22px 16px 34px; } header, .workspace { display: block; } .brand { align-items: flex-start; } .logo { width: 50px; height: 50px; } .metrics { grid-template-columns: 1fr; } .status { display: block; margin-top: 12px; } .bar { grid-template-columns: 96px 1fr 30px; } }",
+            "    @media (max-width: 820px) { main { padding: 22px 16px 34px; } header, .workspace { display: block; } .brand { align-items: flex-start; } .logo { width: 50px; height: 50px; } .metrics { grid-template-columns: 1fr; } .status, .status-strip { display: flex; justify-content: flex-start; margin-top: 12px; } .section-head { display: block; } .search { margin-top: 10px; width: 100%; } .bar { grid-template-columns: 96px 1fr 30px; } }",
             "  </style>",
             "</head>",
             "<body>",
@@ -688,7 +720,7 @@ def _dashboard_html(vault_path: Path, config: AutomationConfig) -> str:
             f"          <p class=\"muted\">Vault: {escape(str(vault_path))}</p>",
             "        </div>",
             "      </div>",
-            "      <p class=\"status\">Service online</p>",
+            f"      <div id=\"dashboardStatus\">{status_strip}</div>",
             "    </header>",
             "    <section class=\"metrics\" aria-label=\"Selected KPIs\">",
             f"      {_metric('Recipes', analytics.recipe_count)}",
@@ -699,11 +731,13 @@ def _dashboard_html(vault_path: Path, config: AutomationConfig) -> str:
             "    <div class=\"workspace\">",
             "      <div>",
             "      <section class=\"section\">",
-            "        <h2>Recipes</h2>",
+            "        <div class=\"section-head\"><h2>Recipes</h2><input id=\"recipeFilter\" class=\"search\" placeholder=\"Search recipes\"></div>",
+            "        <div class=\"table-scroll\">",
             "        <table>",
             "          <thead><tr><th>Name</th><th>Category</th><th>Tags</th><th>Content</th></tr></thead>",
-            f"          <tbody>{recipe_table_body}</tbody>",
+            f"          <tbody id=\"recipeRows\">{recipe_table_body}</tbody>",
             "        </table>",
+            "        </div>",
             "      </section>",
             f"      {_dashboard_jobs(recent_jobs)}",
             "      </div>",
@@ -714,6 +748,25 @@ def _dashboard_html(vault_path: Path, config: AutomationConfig) -> str:
             "      </aside>",
             "    </div>",
             "  </main>",
+            "  <script>",
+            "    const $ = (id) => document.getElementById(id);",
+            "    function escapeHtml(value) { return String(value || '').replace(/[&<>\"]/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[char])); }",
+            "    function escapeAttr(value) { return escapeHtml(value).replace(/'/g, '&#39;'); }",
+            "    function renderStatus(data) {",
+            "      const items = [data.service, data.k8s].filter(Boolean);",
+            "      $('dashboardStatus').innerHTML = '<div class=\"status-strip\">' + items.map(item => '<span class=\"status-pill\" title=\"' + escapeAttr(item.detail || '') + '\"><span class=\"dot ' + escapeAttr(item.level) + '\"></span>' + escapeHtml(item.label) + '</span>').join('') + '</div>';",
+            "    }",
+            "    async function loadStatus() {",
+            "      try { const response = await fetch('/status', { credentials: 'same-origin' }); if (response.ok) renderStatus(await response.json()); } catch (_error) {}",
+            "    }",
+            "    function filterRecipes() {",
+            "      const query = $('recipeFilter').value.trim().toLowerCase();",
+            "      document.querySelectorAll('#recipeRows tr').forEach(row => { row.style.display = !query || row.dataset.search.includes(query) ? '' : 'none'; });",
+            "    }",
+            "    $('recipeFilter').addEventListener('input', filterRecipes);",
+            "    setInterval(loadStatus, 15000);",
+            "    loadStatus();",
+            "  </script>",
             "</body>",
             "</html>",
             "",
@@ -761,8 +814,9 @@ def _dashboard_recipe_row(path: Path, recipe: Recipe) -> str:
     categories = ", ".join(recipe.categories) or "-"
     tags = "".join(f'<span class="tag">{escape(tag)}</span>' for tag in recipe.tags)
     content = f"{len(recipe.ingredients)} ingredients, {len(recipe.steps)} steps"
+    searchable = " ".join([recipe.title or path.stem, categories, " ".join(recipe.tags), content]).casefold()
     return (
-        "<tr>"
+        f'<tr data-search="{escape(searchable, quote=True)}">'
         f'<td><a href="/recipes/{quote(path.stem)}">{escape(recipe.title or path.stem)}</a></td>'
         f"<td>{escape(categories)}</td>"
         f'<td><span class="tagline">{tags or "-"}</span></td>'
@@ -800,6 +854,65 @@ def _dashboard_jobs(jobs: list[object]) -> str:
             "</table>"
         )
     return f'<section class="section"><h2>Ingest jobs</h2>{body}</section>'
+
+
+def _status_strip(status: dict[str, dict[str, str]]) -> str:
+    parts = []
+    for item in (status.get("service"), status.get("k8s")):
+        if not item:
+            continue
+        level = escape(item.get("level", "amber"))
+        label = escape(item.get("label", "Status"))
+        detail = escape(item.get("detail", ""), quote=True)
+        parts.append(f'<span class="status-pill" title="{detail}"><span class="dot {level}"></span>{label}</span>')
+    return '<div class="status-strip">' + "".join(parts) + "</div>"
+
+
+def _app_status(vault_path: Path) -> dict[str, dict[str, str]]:
+    jobs = list_jobs(vault_path)
+    failed_jobs = sum(1 for job in jobs if job.status == "failed")
+    open_jobs = sum(1 for job in jobs if job.status in {"pending", "running"})
+    if not vault_path.exists() or not vault_path.is_dir():
+        service = {"level": "red", "label": "Vault offline", "detail": f"Vault folder is unavailable: {vault_path}"}
+    elif failed_jobs:
+        service = {"level": "red", "label": f"{failed_jobs} failed job{'s' if failed_jobs != 1 else ''}", "detail": "Review or retry failed ingest jobs."}
+    elif open_jobs:
+        service = {"level": "amber", "label": f"{open_jobs} open job{'s' if open_jobs != 1 else ''}", "detail": "Queued or running ingest jobs are present."}
+    else:
+        service = {"level": "green", "label": "Service ready", "detail": "Vault is available and no ingest jobs need attention."}
+    return {"service": service, "k8s": _k8s_status_indicator()}
+
+
+def _k8s_status_indicator(namespace: str = "cronpot-local") -> dict[str, str]:
+    def probe(command: list[str]) -> tuple[bool, str]:
+        try:
+            result = subprocess.run(command, text=True, capture_output=True, check=False, timeout=2)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return False, str(exc)
+        return result.returncode == 0, (result.stdout or result.stderr).strip()
+
+    namespace_ok, namespace_output = probe(["kubectl", "get", "namespace", namespace, "-o", "name"])
+    if not namespace_ok:
+        cluster_ok, cluster_output = probe(["kubectl", "cluster-info"])
+        if not cluster_ok:
+            return {"level": "red", "label": "K8s offline", "detail": namespace_output or cluster_output or "Cluster is not reachable."}
+        return {"level": "amber", "label": "K8s namespace missing", "detail": namespace_output or f"Namespace {namespace} was not found."}
+    api_ok, api_output = probe(
+        [
+            "kubectl",
+            "-n",
+            namespace,
+            "get",
+            "pod",
+            "-l",
+            "app.kubernetes.io/component=api",
+            "-o",
+            "jsonpath={.items[?(@.status.phase=='Running')].metadata.name}",
+        ]
+    )
+    if not api_ok or not api_output.strip():
+        return {"level": "amber", "label": "K8s no API pod", "detail": api_output or "CronPot API pod is not running."}
+    return {"level": "green", "label": "K8s ready", "detail": f"Running API pod: {api_output.split()[0]}"}
 
 
 def _query_values(query: dict[str, list[str]], key: str) -> list[str]:

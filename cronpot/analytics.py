@@ -5,12 +5,12 @@ import re
 import subprocess
 import shutil
 import tempfile
+import base64
 from collections.abc import Iterable
 from collections import Counter
 from dataclasses import dataclass
 from html import escape
 from pathlib import Path
-from urllib.parse import quote
 
 from cronpot.models import Recipe
 from cronpot.config import AutomationConfig
@@ -21,7 +21,7 @@ from cronpot.vault import load_recipes
 LOGO_SVG = Path(__file__).resolve().parent.parent / "assets" / "cronpot-logo.svg"
 LOGO_DATA_URI = ""
 if LOGO_SVG.exists():
-    LOGO_DATA_URI = "data:image/svg+xml;utf8," + quote(LOGO_SVG.read_text(encoding="utf-8"), safe="/:=#;,%?&+()!~*")
+    LOGO_DATA_URI = "data:image/svg+xml;base64," + base64.b64encode(LOGO_SVG.read_bytes()).decode("ascii")
 
 
 @dataclass(slots=True)

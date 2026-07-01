@@ -59,7 +59,7 @@ Unauthorised API response:
 
 ### `GET /mobile`
 
-Returns the phone-oriented HTML UI. It includes pairing, URL ingest job queueing, job status, recipe search, shopping list generation, and copy-to-clipboard.
+Returns the phone-oriented HTML UI. It includes pairing, URL ingest job queueing, job status, service/Kubernetes status indicators, recipe search, shopping list generation, and copy-to-clipboard.
 
 ### `POST /auth`
 
@@ -143,6 +143,33 @@ Unavailable response:
   "status": "vault unavailable"
 }
 ```
+
+### `GET /status`
+
+Returns the lightweight UI status model used by the dashboard and mobile page.
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8080/status
+```
+
+Example:
+
+```json
+{
+  "service": {
+    "level": "green",
+    "label": "Service ready",
+    "detail": "Vault is available and no ingest jobs need attention."
+  },
+  "k8s": {
+    "level": "green",
+    "label": "K8s ready",
+    "detail": "Running API pod: cronpot-api-123"
+  }
+}
+```
+
+`level` is one of `green`, `amber`, or `red`.
 
 ## Analytics
 

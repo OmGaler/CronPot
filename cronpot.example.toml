@@ -5,7 +5,7 @@ require_dietary_tag = true
 [schema]
 ingredient_heading = "Ingredients"
 method_heading = "Method"
-frontmatter_fields = ["tags", "source", "source_hash", "prep_time", "cook_time", "total_time", "servings", "yield"]
+frontmatter_fields = ["tags", "source", "source_hash", "prep_time", "cook_time", "total_time", "serves", "yield"]
 
 [style]
 english = "british"

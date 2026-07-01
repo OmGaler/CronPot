@@ -66,13 +66,26 @@ class ServerTests(unittest.TestCase):
         self.assertEqual({recipe["name"] for recipe in payload["recipes"]}, {"Aglio e Olio", "Roast Chicken"})
 
     def test_serves_dashboard(self) -> None:
-        text = self.get_text("/")
+        with patch(
+            "cronpot.server.subprocess.run",
+            side_effect=[
+                subprocess.CompletedProcess(["kubectl"], 0, "cluster", ""),
+                subprocess.CompletedProcess(["kubectl"], 0, "namespace/cronpot-local", ""),
+                subprocess.CompletedProcess(["kubectl"], 0, "cronpot-api-123", ""),
+            ],
+        ):
+            text = self.get_text("/")
 
         self.assertIn("<title>CronPot Dashboard</title>", text)
         self.assertIn('href="/favicon.svg"', text)
         self.assertIn('src="/assets/cronpot-logo.svg"', text)
-        self.assertIn("Service online", text)
+        self.assertIn("Service ready", text)
+        self.assertIn("K8s ready", text)
+        self.assertIn("dot green", text)
         self.assertIn("Aglio e Olio", text)
+        self.assertIn('id="recipeFilter"', text)
+        self.assertIn('id="recipeRows"', text)
+        self.assertIn("filterRecipes", text)
         self.assertIn("Top ingredients", text)
         self.assertIn("Ingest jobs", text)
         self.assertIn('class="fill" style="width:', text)
@@ -240,6 +253,8 @@ class ServerTests(unittest.TestCase):
         text = self.get_text("/mobile")
 
         self.assertIn("Pair this device", text)
+        self.assertIn("statusStrip", text)
+        self.assertIn("loadStatus", text)
         self.assertIn("Queue recipe ingest", text)
         self.assertIn("Vault sync", text)
         self.assertIn("Run jobs", text)
@@ -250,6 +265,22 @@ class ServerTests(unittest.TestCase):
         self.assertIn("Command tips", text)
         self.assertIn("cronpot k8s github pull", text)
         self.assertIn("Shopping list", text)
+
+    def test_status_endpoint_reports_service_and_k8s(self) -> None:
+        with patch(
+            "cronpot.server.subprocess.run",
+            side_effect=[
+                subprocess.CompletedProcess(["kubectl"], 0, "cluster", ""),
+                subprocess.CompletedProcess(["kubectl"], 0, "namespace/cronpot-local", ""),
+                subprocess.CompletedProcess(["kubectl"], 0, "cronpot-api-123", ""),
+            ],
+        ):
+            payload = self.get_json("/status")
+
+        self.assertEqual(payload["service"]["level"], "green")
+        self.assertEqual(payload["service"]["label"], "Service ready")
+        self.assertEqual(payload["k8s"]["level"], "green")
+        self.assertEqual(payload["k8s"]["label"], "K8s ready")
 
     def test_mobile_k8s_pull_runs_cli_command(self) -> None:
         with patch(
