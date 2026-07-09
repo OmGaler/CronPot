@@ -33,31 +33,49 @@ jobs:
           python-version: "3.12"
       - uses: azure/setup-kubectl@v4
       - name: Compile Python
-        run: python -m compileall cronpot tests
+        run: |
+          mkdir -p test-results
+          set -o pipefail
+          python -m compileall cronpot tests 2>&1 | tee test-results/compile-python.txt
       - name: Run unit tests
-        run: python -m unittest discover -s tests
+        run: |
+          mkdir -p test-results
+          set -o pipefail
+          python -m unittest discover -s tests 2>&1 | tee test-results/unit-tests.txt
       - name: Render Kubernetes manifests
         run: |
+          mkdir -p test-results/k8s
           for overlay in local dev staging production; do
-            kubectl kustomize --load-restrictor=LoadRestrictionsNone "k8s/overlays/$overlay" > "/tmp/cronpot-$overlay.yaml"
+            kubectl kustomize --load-restrictor=LoadRestrictionsNone "k8s/overlays/$overlay" | tee "test-results/k8s/cronpot-$overlay.yaml" > "/tmp/cronpot-$overlay.yaml"
           done
       - name: Check Kubernetes overlay contracts
         run: |
-          grep -q "namespace: cronpot-local" /tmp/cronpot-local.yaml
-          grep -q "image: python:3.12-slim" /tmp/cronpot-local.yaml
-          grep -q "type: NodePort" /tmp/cronpot-local.yaml
+          set -o pipefail
+          {
+            grep -q "namespace: cronpot-local" /tmp/cronpot-local.yaml
+            grep -q "image: python:3.12-slim" /tmp/cronpot-local.yaml
+            grep -q "type: NodePort" /tmp/cronpot-local.yaml
 
-          grep -q "namespace: cronpot-dev" /tmp/cronpot-dev.yaml
-          grep -q "image: ghcr.io/example/cronpot:dev" /tmp/cronpot-dev.yaml
-          grep -q "storage: 1Gi" /tmp/cronpot-dev.yaml
+            grep -q "namespace: cronpot-dev" /tmp/cronpot-dev.yaml
+            grep -q "image: ghcr.io/example/cronpot:dev" /tmp/cronpot-dev.yaml
+            grep -q "storage: 1Gi" /tmp/cronpot-dev.yaml
 
-          grep -q "namespace: cronpot-staging" /tmp/cronpot-staging.yaml
-          grep -q "image: ghcr.io/example/cronpot:staging" /tmp/cronpot-staging.yaml
-          grep -q "storage: 2Gi" /tmp/cronpot-staging.yaml
+            grep -q "namespace: cronpot-staging" /tmp/cronpot-staging.yaml
+            grep -q "image: ghcr.io/example/cronpot:staging" /tmp/cronpot-staging.yaml
+            grep -q "storage: 2Gi" /tmp/cronpot-staging.yaml
 
-          grep -q "namespace: cronpot" /tmp/cronpot-production.yaml
-          grep -q "image: ghcr.io/example/cronpot:latest" /tmp/cronpot-production.yaml
-          grep -q "storage: 5Gi" /tmp/cronpot-production.yaml
+            grep -q "namespace: cronpot" /tmp/cronpot-production.yaml
+            grep -q "image: ghcr.io/example/cronpot:latest" /tmp/cronpot-production.yaml
+            grep -q "storage: 5Gi" /tmp/cronpot-production.yaml
+            echo "Kubernetes overlay contract checks passed."
+          } 2>&1 | tee test-results/k8s-contracts.txt
+      - name: Upload CI test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-test-results
+          path: test-results
+          if-no-files-found: error
 
   image:
     runs-on: ubuntu-latest
@@ -73,6 +91,8 @@ jobs:
         run: docker build -t "$IMAGE:${{ github.sha }}" -t "$IMAGE:latest" .
       - name: Smoke-test container
         run: |
+          mkdir -p image-test-results
+          exec > >(tee image-test-results/smoke-test.txt) 2>&1
           docker run --detach --name cronpot-smoke --tmpfs /vault:mode=755 --publish 127.0.0.1:18080:8080 "$IMAGE:${{ github.sha }}"
           trap 'docker logs cronpot-smoke; docker rm --force cronpot-smoke' EXIT
           wait_for_endpoint() {
@@ -88,6 +108,13 @@ jobs:
           }
           wait_for_endpoint http://127.0.0.1:18080/healthz
           wait_for_endpoint http://127.0.0.1:18080/readyz
+      - name: Upload image test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-test-results
+          path: image-test-results
+          if-no-files-found: ignore
       - name: Push image
         if: github.event_name != 'pull_request'
         run: |
