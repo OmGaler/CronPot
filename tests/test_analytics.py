@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -139,20 +140,26 @@ class AnalyticsTests(unittest.TestCase):
         self.assertNotIn("1 <large> fish", output)
 
     def test_builds_pdf_cookbook(self) -> None:
-        output = pdf_cookbook(
-            [
-                (
-                    Path("Aglio e Olio.md"),
-                    Recipe(
-                        title="Aglio e Olio",
-                        ingredients=["100g spaghetti"],
-                        steps=["Boil the pasta."],
-                        tags=["parev"],
-                        categories=["Mains"],
-                    ),
-                )
-            ]
-        )
+        def render_pdf(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+            output_argument = next(argument for argument in command if argument.startswith("--print-to-pdf="))
+            Path(output_argument.split("=", 1)[1]).write_bytes(b"%PDF-1.4\n%%EOF\n")
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with patch("cronpot.analytics._pdf_browser_path", return_value=Path("/usr/bin/google-chrome")), patch("cronpot.analytics.subprocess.run", side_effect=render_pdf):
+            output = pdf_cookbook(
+                [
+                    (
+                        Path("Aglio e Olio.md"),
+                        Recipe(
+                            title="Aglio e Olio",
+                            ingredients=["100g spaghetti"],
+                            steps=["Boil the pasta."],
+                            tags=["parev"],
+                            categories=["Mains"],
+                        ),
+                    )
+                ]
+            )
 
         self.assertTrue(output.startswith(b"%PDF-"))
         self.assertTrue(output.rstrip().endswith(b"%%EOF"))

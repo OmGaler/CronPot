@@ -113,7 +113,7 @@ class CliTests(unittest.TestCase):
                 vault,
             )
 
-            with redirect_stdout(StringIO()):
+            with patch("cronpot.cli.pdf_cookbook", return_value=b"%PDF-1.4\n%%EOF\n"), redirect_stdout(StringIO()):
                 exit_code = main(["export", "Aglio e Olio", "--vault", str(vault), "--format", "pdf", "--output", str(output)])
 
             self.assertEqual(exit_code, 0)
@@ -138,7 +138,7 @@ class CliTests(unittest.TestCase):
             previous_cwd = Path.cwd()
             try:
                 os.chdir(workdir)
-                with redirect_stdout(StringIO()):
+                with patch("cronpot.cli.pdf_cookbook", return_value=b"%PDF-1.4\n%%EOF\n"), redirect_stdout(StringIO()):
                     exit_code = main(["export", "Aglio e Olio", "--vault", str(vault), "--format", "pdf"])
             finally:
                 os.chdir(previous_cwd)
@@ -249,6 +249,10 @@ class CliTests(unittest.TestCase):
         self.assertIn("name: cronpot-github-push-20260617010101", yaml)
         self.assertIn("value: 'Sync from test'", yaml)
         self.assertIn("git config --global --add safe.directory /work/repo", yaml)
+        self.assertIn("runAsUser: 10001", yaml)
+        self.assertIn("runAsGroup: 10001", yaml)
+        self.assertIn("fsGroup: 10001", yaml)
+        self.assertIn("value: /tmp", yaml)
         self.assertIn('if [ ! -d "$repo_path" ]; then', yaml)
         self.assertNotIn('rm -rf "$repo_path"', yaml)
         self.assertIn("key: author_name", yaml)
@@ -338,6 +342,24 @@ class CliTests(unittest.TestCase):
 
         clear_commands = [call.args[0] for call in run.call_args_list if "find '/vault/docs'" in " ".join(call.args[0])]
         self.assertEqual(len(clear_commands), 1)
+
+    def test_k8s_push_local_repairs_vault_permissions_when_clear_fails(self) -> None:
+        error = subprocess.CalledProcessError(1, ["kubectl"])
+        with tempfile.TemporaryDirectory() as temp_dir, patch("cronpot.cli._running_api_pod", return_value="cronpot-api-123"), patch(
+            "cronpot.cli._run",
+            side_effect=[None, error, None, None, None, None],
+        ) as run, patch("cronpot.cli._run_with_input") as apply, patch("cronpot.cli._kubectl_output", return_value="1"), patch(
+            "cronpot.cli.subprocess.run"
+        ), patch("cronpot.cli.time.strftime", return_value="20260709010101"), redirect_stdout(StringIO()):
+            source = Path(temp_dir) / "recipes"
+            source.mkdir()
+            main(["k8s", "push-local", str(source), "--namespace", "cronpot-local", "--destination", "/vault/docs", "--clear"])
+
+        repair_yaml = apply.call_args.args[1]
+        self.assertIn("name: cronpot-vault-permissions-20260709010101", repair_yaml)
+        self.assertIn("chown -R 10001:10001 /vault", repair_yaml)
+        clear_commands = [call.args[0] for call in run.call_args_list if "find '/vault/docs'" in " ".join(call.args[0])]
+        self.assertEqual(len(clear_commands), 2)
 
     def test_k8s_vault_destination_rejects_paths_outside_vault(self) -> None:
         with self.assertRaisesRegex(ValueError, "below /vault"):

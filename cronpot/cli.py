@@ -750,19 +750,23 @@ def _push_local_vault_to_k8s(source: str, namespace: str, destination: str | Non
     remote_path = _k8s_vault_destination(source_path, destination)
     _run(["kubectl", "-n", namespace, "exec", pod, "--", "mkdir", "-p", remote_path])
     if clear:
-        _run(
-            [
-                "kubectl",
-                "-n",
-                namespace,
-                "exec",
-                pod,
-                "--",
-                "sh",
-                "-c",
-                f"find {_sh_single_quote(remote_path)} -mindepth 1 -maxdepth 1 -exec rm -rf {{}} +",
-            ]
-        )
+        clear_command = [
+            "kubectl",
+            "-n",
+            namespace,
+            "exec",
+            pod,
+            "--",
+            "sh",
+            "-c",
+            f"find {_sh_single_quote(remote_path)} -mindepth 1 -maxdepth 1 -exec rm -rf {{}} +",
+        ]
+        try:
+            _run(clear_command)
+        except subprocess.CalledProcessError:
+            print("Vault cleanup hit a permissions error; repairing PVC ownership and retrying.")
+            _repair_k8s_vault_permissions(namespace)
+            _run(clear_command)
     with tempfile.TemporaryDirectory(prefix="cronpot-local-vault-") as temp_dir:
         staging = Path(temp_dir) / source_path.name
         staging.mkdir()
@@ -803,7 +807,64 @@ def _remove_k8s_duplicate_root_markdown(namespace: str, folder_name: str) -> Non
         "done; "
         "fi"
     )
-    _run(["kubectl", "-n", namespace, "exec", pod, "--", "sh", "-c", script])
+    command = ["kubectl", "-n", namespace, "exec", pod, "--", "sh", "-c", script]
+    try:
+        _run(command)
+    except subprocess.CalledProcessError:
+        print("Duplicate recipe cleanup hit a permissions error; repairing PVC ownership and retrying.")
+        _repair_k8s_vault_permissions(namespace)
+        _run(command)
+
+
+def _repair_k8s_vault_permissions(namespace: str) -> None:
+    job_name = f"cronpot-vault-permissions-{time.strftime('%Y%m%d%H%M%S')}"
+    yaml = f"""apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {job_name}
+  namespace: {namespace}
+  labels:
+    app.kubernetes.io/name: cronpot
+    app.kubernetes.io/component: vault-permissions
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cronpot
+        app.kubernetes.io/component: vault-permissions
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: repair
+          image: alpine/git:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - chown -R 10001:10001 /vault
+          volumeMounts:
+            - name: vault
+              mountPath: /vault
+      volumes:
+        - name: vault
+          persistentVolumeClaim:
+            claimName: cronpot-vault
+"""
+    _run_with_input(["kubectl", "apply", "-f", "-"], yaml)
+    try:
+        _run(["kubectl", "-n", namespace, "wait", "--for=condition=complete", f"job/{job_name}", "--timeout=120s"])
+        _run(["kubectl", "-n", namespace, "logs", f"job/{job_name}"])
+    except subprocess.CalledProcessError:
+        subprocess.run(
+            ["kubectl", "-n", namespace, "logs", f"job/{job_name}", "--all-containers=true", "--ignore-errors=true"],
+            text=True,
+            check=False,
+        )
+        raise
+    finally:
+        subprocess.run(["kubectl", "-n", namespace, "delete", "job", job_name, "--ignore-not-found"], text=True, check=False)
 
 
 def _copy_local_vault_for_push(source: Path, target: Path) -> None:
@@ -905,6 +966,11 @@ spec:
         app.kubernetes.io/name: cronpot
         app.kubernetes.io/component: github-sync
     spec:
+      securityContext:
+        fsGroup: 10001
+        runAsGroup: 10001
+        runAsNonRoot: true
+        runAsUser: 10001
       restartPolicy: Never
       containers:
         - name: github-sync
@@ -921,6 +987,8 @@ spec:
                 secretKeyRef:
                   name: cronpot-vault-github
                   key: repo
+            - name: HOME
+              value: /tmp
             - name: GITHUB_TOKEN
               valueFrom:
                 secretKeyRef:
