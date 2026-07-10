@@ -69,6 +69,24 @@ jobs:
             grep -q "storage: 5Gi" /tmp/cronpot-production.yaml
             echo "Kubernetes overlay contract checks passed."
           } 2>&1 | tee test-results/k8s-contracts.txt
+      - name: Publish test summary
+        if: always()
+        run: |
+          {
+            echo "# CI test results"
+            for result in test-results/compile-python.txt test-results/unit-tests.txt test-results/k8s-contracts.txt; do
+              if [ -f "$result" ]; then
+                echo "<details>"
+                echo "<summary>${result#test-results/}</summary>"
+                echo
+                echo '```text'
+                cat "$result"
+                echo '```'
+                echo "</details>"
+                echo
+              fi
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload CI test results
         if: always()
         uses: actions/upload-artifact@v4
@@ -108,6 +126,19 @@ jobs:
           }
           wait_for_endpoint http://127.0.0.1:18080/healthz
           wait_for_endpoint http://127.0.0.1:18080/readyz
+      - name: Publish smoke-test summary
+        if: always()
+        run: |
+          {
+            echo "# Image smoke-test result"
+            if [ -f image-test-results/smoke-test.txt ]; then
+              echo '```text'
+              cat image-test-results/smoke-test.txt
+              echo '```'
+            else
+              echo "The smoke test did not produce output."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload image test results
         if: always()
         uses: actions/upload-artifact@v4
